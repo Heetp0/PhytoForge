@@ -911,7 +911,7 @@ git commit -m "feat(retrieval): add neutral-mass normalized transductive test-se
 - Consumes: Query context + list of candidate molecules from all tracks.
 - Produces: `re_rank_candidates(query, candidates) -> List[Candidate]` scored by GBDT model.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/test_meta_ranker.py
@@ -945,12 +945,12 @@ def test_reranking_sort_order():
     assert len(scored) == 2
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `python -m pytest tests/test_meta_ranker.py -v`  
 Expected: FAIL with `ModuleNotFoundError: No module named 'src.reranking.meta_ranker'`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 ```python
 # src/reranking/meta_ranker.py
@@ -1048,12 +1048,12 @@ class GBDTMetaRanker:
         return candidates
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest tests/test_meta_ranker.py -v`  
 Expected: PASS (2 passed).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/reranking/meta_ranker.py tests/test_meta_ranker.py

@@ -40,10 +40,10 @@ Scope: End-to-end implementation and verification of the CASMI-Omega v2 molecula
   EXPECT: 2 passed
   EVIDENCE: Passed in commit 1710298 (6 passed in 0.12s, 0 regressions across 86 tests in regression suite)
 
-- [ ] G8: Module 4 30+ Feature GBDT Meta-Ranker extracts >= 30 multimodal features across spectral, chemical, and cross-track agreement
+- [x] G8: Module 4 30+ Feature GBDT Meta-Ranker extracts >= 30 multimodal features across spectral, chemical, and cross-track agreement
   CHECK: python -m pytest tests/test_meta_ranker.py -v
   EXPECT: 2 passed
-  EVIDENCE: pending
+  EVIDENCE: Passed in commit 7017a37 (5 passed in 0.08s, 0 regressions across 92 tests in regression suite)
 
 - [ ] G9: Module 5 Planar InChIKey14 Decision-Theoretic Slot Optimizer guarantees exactly 25 unique strictly alphanumeric planar skeletons
   CHECK: python -m pytest tests/test_slot_optimizer.py -v
