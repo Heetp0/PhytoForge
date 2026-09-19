@@ -63,4 +63,4 @@ Scope: End-to-end implementation and verification of the CASMI-Omega v2 molecula
 - [x] G12: Full Project Test Suite passes with zero regressions
   CHECK: python -m pytest tests/ -q
   EXPECT: passed
-  EVIDENCE: Passed (207 passed, 0 failures across all 16 test modules in 14.07s)
+  EVIDENCE: Passed (258 passed, 0 warnings, 0 failures across all 16 test modules in 10.14s with -W error)

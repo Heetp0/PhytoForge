@@ -47,11 +47,23 @@ class DecisionTheoreticSlotOptimizer:
         def _extract_score(cand: Any) -> float:
             if isinstance(cand, dict):
                 score = cand.get("score")
+                if score is None:
+                    score = cand.get("meta_score")
                 if score is not None:
                     try:
                         return float(score)
                     except (ValueError, TypeError):
                         pass
+            elif hasattr(cand, "score"):
+                try:
+                    return float(cand.score)
+                except (ValueError, TypeError):
+                    pass
+            elif hasattr(cand, "meta_score"):
+                try:
+                    return float(cand.meta_score)
+                except (ValueError, TypeError):
+                    pass
             return 0.0
 
         def _extract_ik14(cand: Any) -> Optional[str]:

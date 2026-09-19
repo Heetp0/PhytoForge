@@ -415,8 +415,9 @@ class Tier2TanimotoRankerOracle:
         else:
             and_counts = np.array([sum(int(v).bit_count() for v in row) for row in (candidate_fps & query_fp)])
             or_counts = np.array([sum(int(v).bit_count() for v in row) for row in (candidate_fps | query_fp)])
-
-        scores = np.where(or_counts == 0, 1.0 if np.all(query_fp == 0) else 0.0, and_counts / or_counts)
+        safe_or = np.where(or_counts == 0, 1, or_counts)
+        divided = and_counts / safe_or
+        scores = np.where(or_counts == 0, 1.0 if np.all(query_fp == 0) else 0.0, divided)
 
         results = []
         for i, score in enumerate(scores):

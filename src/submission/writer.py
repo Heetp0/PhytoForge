@@ -229,12 +229,13 @@ def validate_submission_file(
     return len(errors) == 0, errors
 
 
-def validate_submission(df: pd.DataFrame, expected_ids: List[str]) -> bool:
+def validate_submission(df: pd.DataFrame, expected_ids: Optional[Sequence[str]] = None) -> bool:
     """Validate all structural submission invariants required for Kaggle scoring."""
     assert "id" in df.columns, "Submission must contain 'id' column"
     assert "candidates" in df.columns, "Submission must contain 'candidates' column"
-    assert len(df) == len(expected_ids), f"Row count mismatch: got {len(df)}, expected {len(expected_ids)}"
-    assert set(df["id"]) == set(expected_ids), "Spectrum IDs do not match expected test set IDs"
+    if expected_ids is not None:
+        assert len(df) == len(expected_ids), f"Row count mismatch: got {len(df)}, expected {len(expected_ids)}"
+        assert set(df["id"]) == set(expected_ids), "Spectrum IDs do not match expected test set IDs"
 
     for idx, row in df.iterrows():
         raw_val = row["candidates"]

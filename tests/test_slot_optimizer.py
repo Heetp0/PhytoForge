@@ -112,3 +112,18 @@ def test_slot_optimizer_candidate_scores_prioritization_order():
     assert len(slots) == 25
     assert len(set(slots)) == 25
     assert all(len(s) == 14 and s.isalnum() for s in slots)
+
+
+def test_slot_optimizer_meta_score_prioritization_order():
+    optimizer = DecisionTheoreticSlotOptimizer(fallback_pool=[f"FALLBACKKEY{i:03d}" for i in range(30)])
+
+    # Candidates output by GBDTMetaRanker with "meta_score" in arbitrary order
+    raw = [
+        {"inchikey14": "LOWMETA0000001", "meta_score": 0.15},
+        {"inchikey14": "HIGHMETA000001", "meta_score": 0.98},
+        {"inchikey14": "MIDMETA0000001", "meta_score": 0.55},
+    ]
+    slots = optimizer.allocate_25_slots(raw)
+    assert slots[0] == "HIGHMETA000001"
+    assert slots[1] == "MIDMETA0000001"
+    assert slots[2] == "LOWMETA0000001"

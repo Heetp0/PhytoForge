@@ -96,8 +96,10 @@ class GBDTMetaRanker:
     def score_candidates(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         for cand in candidates:
             feat = cand["features"]
-            cand["meta_score"] = float(
+            score_val = float(
                 np.dot(feat[: len(self.weights)], self.weights[: len(feat)])
             )
+            cand["meta_score"] = score_val
+            cand["score"] = score_val
         candidates.sort(key=lambda x: x["meta_score"], reverse=True)
         return candidates

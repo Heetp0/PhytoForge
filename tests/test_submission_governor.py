@@ -103,3 +103,10 @@ def test_empty_dataframe_handling():
     # Empty DataFrame with non-empty expected IDs should fail row count check
     with pytest.raises(AssertionError, match="Row count mismatch"):
         validate_submission(empty_df, ["ID1"])
+
+
+def test_validate_submission_optional_expected_ids():
+    valid_cands = ";".join([f"IK14TEST{i:06d}" for i in range(25)])
+    df = pd.DataFrame({"id": ["SPEC1", "SPEC2"], "candidates": [valid_cands, valid_cands]})
+    # Calling validate_submission without expected_ids should succeed
+    assert validate_submission(df, None) is True
