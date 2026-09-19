@@ -27,6 +27,8 @@ build/
 implementation_plan.md
 task.md
 walkthrough.md
+prompt_draft.md
+ORIGINAL_REQUEST.md
 *.graphify*
 graphify-out/
 .agents/

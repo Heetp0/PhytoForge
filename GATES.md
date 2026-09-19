@@ -69,3 +69,8 @@ Scope: End-to-end implementation and verification of the CASMI-Omega v2 molecula
   CHECK: python -m pytest tests/ -v -W error
   EXPECT: 540 passed, 0 warnings, 0 failures
   EVIDENCE: Passed (540 passed, 0 warnings, 0 failures across 25 test modules in 25.61s with -W error)
+
+- [x] G14: Dual-Format Submission & Pipeline Harmonization (582 tests)
+  CHECK: python -m pytest tests/test_dual_format_submission.py -v -W error
+  EXPECT: 42 passed, 0 warnings, 0 failures
+  EVIDENCE: Passed (42 passed in test_dual_format_submission.py; 582 passed in 64.48s across full suite with 0 warnings)

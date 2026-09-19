@@ -6,6 +6,7 @@ import pandas as pd
 
 from src.chemistry.adducts import (
     calculate_canonical_neutral_mass,
+    get_adduct_info,
     get_multihypothesis_precursor_candidates,
 )
 from src.data.multi_energy_fusion import MultiEnergyFusionEngine, SpectralFrame
@@ -16,7 +17,12 @@ from src.retrieval.generative_denovo import BoundedGenerativeEngine
 from src.retrieval.transductive_networking import TransductiveMolecularNetwork
 from src.reranking.meta_ranker import GBDTMetaRanker
 from src.reranking.slot_optimizer import DecisionTheoreticSlotOptimizer
-from src.submission.writer import validate_submission
+from src.submission.writer import (
+    DEFAULT_FALLBACK_SMILES,
+    get_inchikey14,
+    validate_submission,
+    write_submission,
+)
 from src.submission.runtime_governor import DynamicRuntimeGovernor
 
 
@@ -49,17 +55,77 @@ class CASMIOmegaPipeline:
         self.slot_optimizer = DecisionTheoreticSlotOptimizer(fallback_pool=self.fallback_pool)
         self.governor = DynamicRuntimeGovernor(total_budget_seconds=governor_budget_seconds, reserve_seconds=480.0)
 
-    def run(self, test_df: pd.DataFrame, output_path: Union[str, Path]) -> pd.DataFrame:
+    def run(
+        self,
+        test_df: pd.DataFrame,
+        output_path: Union[str, Path],
+        output_format: str = "inchikey14",
+    ) -> pd.DataFrame:
         output_path = Path(output_path)
-        expected_ids = list(test_df["id"]) if not test_df.empty and "id" in test_df.columns else []
+        if output_format is None:
+            output_format = "inchikey14"
+        fmt = str(output_format).strip().lower()
+        if fmt not in ("inchikey14", "smiles"):
+            raise ValueError(
+                f"Invalid output_format '{output_format}'. Must be 'inchikey14' or 'smiles'."
+            )
+
+        if test_df is None or (isinstance(test_df, pd.DataFrame) and test_df.empty):
+            test_df = pd.DataFrame()
+
+        if not test_df.empty:
+            id_col = "id" if "id" in test_df.columns else ("molecule_id" if "molecule_id" in test_df.columns else None)
+            if id_col is not None and test_df[id_col].notna().all():
+                expected_ids = [str(x) for x in test_df[id_col]]
+            else:
+                expected_ids = [
+                    str(test_df.iloc[i][id_col]) if id_col is not None and pd.notna(test_df.iloc[i][id_col]) else f"SPEC_{i:04d}"
+                    for i in range(len(test_df))
+                ]
+        else:
+            expected_ids = []
+
+        if test_df.empty:
+            if fmt == "inchikey14":
+                sub_df = pd.DataFrame(columns=["id", "candidates"])
+            else:
+                sub_df = pd.DataFrame(columns=["molecule_id", "smiles"])
+            validate_submission(sub_df, expected_ids=expected_ids, output_format=fmt)
+            write_submission(
+                sub_df,
+                output_path=output_path,
+                expected_ids=expected_ids,
+                output_format=fmt,
+            )
+            return sub_df
+
         total_spectra = len(test_df)
         rows = []
         start_pipeline_time = time.perf_counter()
 
-        for idx, row in test_df.iterrows():
-            spec_id = row["id"]
-            precursor_mz = float(row["precursor_mz"])
-            adduct = str(row["adduct"])
+        for row_idx, (_, row) in enumerate(test_df.iterrows()):
+            spec_id = expected_ids[row_idx]
+
+            try:
+                raw_mz = row.get("precursor_mz", 300.0)
+                precursor_mz = float(raw_mz)
+                if np.isnan(precursor_mz) or np.isinf(precursor_mz) or precursor_mz <= 0.0:
+                    precursor_mz = 300.0
+            except (ValueError, TypeError):
+                precursor_mz = 300.0
+
+            polarity = str(row.get("polarity", "positive")).strip().lower()
+            default_adduct = "[M-H]-" if polarity in ("negative", "-", "neg") else "[M+H]+"
+            raw_adduct = row.get("adduct", default_adduct)
+            if pd.isna(raw_adduct) or not str(raw_adduct).strip():
+                adduct = default_adduct
+            else:
+                adduct_str = str(raw_adduct).strip()
+                try:
+                    get_adduct_info(adduct_str)
+                    adduct = adduct_str
+                except Exception:
+                    adduct = default_adduct
             spectra_remaining = total_spectra - len(rows)
             elapsed = time.perf_counter() - start_pipeline_time
 
@@ -114,13 +180,13 @@ class CASMIOmegaPipeline:
             # Aggregate multi-track candidates
             aggregated_cands = []
             for c in track1_cands:
-                aggregated_cands.append({"inchikey14": c.inchikey14, "score": c.score, "source": "track1_dreams"})
+                aggregated_cands.append({"inchikey14": c.inchikey14, "smiles": getattr(c, "smiles", None), "score": c.score, "source": "track1_dreams"})
             for c in track2_cands:
-                aggregated_cands.append({"inchikey14": c.inchikey14, "score": c.tanimoto_score, "source": "track2_db"})
+                aggregated_cands.append({"inchikey14": c.inchikey14, "smiles": getattr(c, "smiles", None), "score": c.tanimoto_score, "source": "track2_db"})
             for c in track3_cands:
-                aggregated_cands.append({"inchikey14": c.inchikey14, "score": c.score, "source": "track3_denovo"})
+                aggregated_cands.append({"inchikey14": c.inchikey14, "smiles": getattr(c, "smiles", None), "score": c.score, "source": "track3_denovo"})
             for c in network_cands:
-                aggregated_cands.append({"inchikey14": c.inchikey14, "score": c.network_score, "source": "track_network"})
+                aggregated_cands.append({"inchikey14": c.inchikey14, "smiles": getattr(c, "scaffold_smiles", None), "score": c.network_score, "source": "track_network"})
 
             # Module 4: GBDT Meta-ranking feature extraction & scoring
             scored_candidates = []
@@ -137,19 +203,79 @@ class CASMIOmegaPipeline:
                     formula_rank=1,
                     source_track=c["source"],
                 )
-                scored_candidates.append({"inchikey14": c["inchikey14"], "features": feat})
+                cand_entry = {"inchikey14": c["inchikey14"], "features": feat}
+                if c.get("smiles"):
+                    cand_entry["smiles"] = c["smiles"]
+                scored_candidates.append(cand_entry)
 
             ranked = self.meta_ranker.score_candidates(scored_candidates)
 
-            # Module 5: Planar InChIKey14 slot optimizer (strictly 25 unique valid keys)
-            slots = self.slot_optimizer.allocate_25_slots(ranked)
-            rows.append({"id": spec_id, "candidates": ";".join(slots)})
+            if fmt == "inchikey14":
+                # Module 5: Planar InChIKey14 slot optimizer (strictly 25 unique valid keys)
+                slots = self.slot_optimizer.allocate_25_slots(ranked)
+                rows.append({"id": spec_id, "candidates": ";".join(slots)})
+            else:
+                # SMILES format: 25 unique, valid SMILES strings
+                selected_smiles: List[str] = []
+                seen_ik14: Set[str] = set()
 
-        sub_df = pd.DataFrame(rows, columns=["id", "candidates"])
-        # Module 6: Submission validation and file writing
-        validate_submission(sub_df, expected_ids)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        sub_df.to_csv(output_path, index=False)
+                for cand in ranked:
+                    s = cand.get("smiles")
+                    if s and isinstance(s, str) and s.strip():
+                        s_clean = s.strip()
+                        if any(ch in s_clean for ch in (" ", "\t", "\n", "\r", ",")):
+                            continue
+                        ik14 = get_inchikey14(s_clean)
+                        if ik14:
+                            if ik14 in seen_ik14:
+                                continue
+                            seen_ik14.add(ik14)
+                        elif s_clean in selected_smiles:
+                            continue
+                        selected_smiles.append(s_clean)
+                        if len(selected_smiles) == 25:
+                            break
+
+                if len(selected_smiles) < 25:
+                    for fb in DEFAULT_FALLBACK_SMILES:
+                        fb_clean = fb.strip()
+                        fb_ik = get_inchikey14(fb_clean)
+                        if fb_ik and fb_ik in seen_ik14:
+                            continue
+                        if fb_clean in selected_smiles:
+                            continue
+                        if fb_ik:
+                            seen_ik14.add(fb_ik)
+                        selected_smiles.append(fb_clean)
+                        if len(selected_smiles) == 25:
+                            break
+
+                alkane_k = 1
+                while len(selected_smiles) < 25:
+                    cand_smi = "C" * alkane_k
+                    cand_ik = get_inchikey14(cand_smi)
+                    if cand_smi not in selected_smiles and (not cand_ik or cand_ik not in seen_ik14):
+                        if cand_ik:
+                            seen_ik14.add(cand_ik)
+                        selected_smiles.append(cand_smi)
+                    alkane_k += 1
+
+                selected_smiles = selected_smiles[:25]
+                rows.append({"molecule_id": spec_id, "smiles": ";".join(selected_smiles)})
+
+        if fmt == "inchikey14":
+            sub_df = pd.DataFrame(rows, columns=["id", "candidates"])
+        else:
+            sub_df = pd.DataFrame(rows, columns=["molecule_id", "smiles"])
+
+        # Module 6: Submission validation and atomic file writing
+        validate_submission(sub_df, expected_ids=expected_ids, output_format=fmt)
+        write_submission(
+            sub_df,
+            output_path=output_path,
+            expected_ids=expected_ids,
+            output_format=fmt,
+        )
         return sub_df
 
 
@@ -159,6 +285,7 @@ def run_casmi_omega_pipeline(
     db: Optional[Dict[str, List]] = None,
     fallback_scaffolds: Optional[List] = None,
     governor_budget_seconds: float = 32400.0,
+    output_format: str = "inchikey14",
 ) -> pd.DataFrame:
     """Execute CASMIOmegaPipeline on test DataFrame and export validated submission CSV."""
     pipeline = CASMIOmegaPipeline(
@@ -166,7 +293,7 @@ def run_casmi_omega_pipeline(
         fallback_scaffolds=fallback_scaffolds,
         governor_budget_seconds=governor_budget_seconds,
     )
-    return pipeline.run(test_df, output_path=output_path)
+    return pipeline.run(test_df, output_path=output_path, output_format=output_format)
 
 
 # Official Brand Aliases for PhytoForge
