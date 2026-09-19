@@ -30,10 +30,10 @@ Scope: End-to-end implementation and verification of the CASMI-Omega v2 molecula
   EXPECT: 2 passed
   EVIDENCE: Passed in commit 6c30bdc (6 passed in 0.05s, 0 regressions across 74 tests in test_chemistry_physics.py, test_multi_energy_fusion.py, test_mist_formula_router.py, test_dreams_retrieval.py, test_m1_chemistry_submission.py)
 
-- [ ] G6: Track 3 Generative De Novo Sampler enforces non-blocking execution timeout and native generation step limits
+- [x] G6: Track 3 Generative De Novo Sampler enforces non-blocking execution timeout and native generation step limits
   CHECK: python -m pytest tests/test_generative_denovo.py -v
   EXPECT: 2 passed
-  EVIDENCE: pending
+  EVIDENCE: Passed in commit 7cd16bd (6 passed in 0.25s, 0 regressions across 80 tests in regression suite)
 
 - [ ] G7: Module 3 Neutral-Mass Transductive Network propagates solved scaffolds across expanded delta library (+pentose, +hexose, +rhamnose, +glucuronide, +malonyl) with >= 2 fragment co-validation peaks
   CHECK: python -m pytest tests/test_transductive_networking.py -v

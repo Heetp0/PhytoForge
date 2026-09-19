@@ -629,7 +629,7 @@ git commit -m "feat(retrieval): implement soft database search with Tanimoto sco
 - Consumes: Precursor $m/z$, optional formula string, embedding, timeout.
 - Produces: `List[GenerativeCandidate]` with hard 10.0s time boxing and max 5 candidates.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/test_generative_denovo.py
@@ -657,12 +657,12 @@ def test_generation_bounded_candidates():
     assert len(results) <= 5
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `python -m pytest tests/test_generative_denovo.py -v`  
 Expected: FAIL with `ModuleNotFoundError: No module named 'src.retrieval.generative_denovo'`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 ```python
 # src/retrieval/generative_denovo.py
@@ -717,12 +717,12 @@ class BoundedGenerativeEngine:
         return cands
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest tests/test_generative_denovo.py -v`  
 Expected: PASS (2 passed).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/retrieval/generative_denovo.py tests/test_generative_denovo.py
