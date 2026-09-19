@@ -1496,16 +1496,16 @@ git commit -m "feat(pipeline): implement CASMI-Omega v2 unified end-to-end pipel
 - Consumes: Complete test suite across Modules 1 through 6.
 - Produces: Decisive 0 exit code, verifying all gates G1 through G12 with zero regressions.
 
-- [ ] **Step 1: Execute complete pytest regression suite**
+- [x] **Step 1: Execute complete pytest regression suite**
 
 Run: `python -m pytest tests/ -q`  
 Expected: All tests pass with zero failures and zero warnings.
 
-- [ ] **Step 2: Verify all GATES.md acceptance criteria**
+- [x] **Step 2: Verify all GATES.md acceptance criteria**
 
 Verify that all gates from G1 to G12 in `GATES.md` are verified with exact execution commands and passing evidence.
 
-- [ ] **Step 3: Commit and verify clean tree**
+- [x] **Step 3: Commit and verify clean tree**
 
 ```bash
 git status

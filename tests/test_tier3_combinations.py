@@ -91,7 +91,7 @@ def test_comb_04_knapsack_candidates_diversify_mmr_portfolio(mmr_oracle):
     seed = Candidate("SEED_HIT", "AAAAAAAAAAAAAA", 0.95, "tier1", 200.0)
     # Knapsack assemblies with lower individual confidence but high structural novelty
     knapsack_cands = [
-        Candidate(f"KNAP_{i}", f"KNAP_{i:010d}", 0.65, "knapsack", 200.0)
+        Candidate(f"KNAP_{i}", f"KNAP_{i:09d}", 0.65, "knapsack", 200.0)
         for i in range(10)
     ]
     pool = [seed] + knapsack_cands

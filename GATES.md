@@ -60,7 +60,7 @@ Scope: End-to-end implementation and verification of the CASMI-Omega v2 molecula
   EXPECT: 1 passed
   EVIDENCE: Passed in commit bcfc0e0 (4 passed in 0.36s, 0 regressions across 111 tests in regression suite)
 
-- [ ] G12: Full Project Test Suite passes with zero regressions
+- [x] G12: Full Project Test Suite passes with zero regressions
   CHECK: python -m pytest tests/ -q
   EXPECT: passed
-  EVIDENCE: pending
+  EVIDENCE: Passed (207 passed, 0 failures across all 16 test modules in 14.07s)
