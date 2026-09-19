@@ -1,0 +1,87 @@
+from dataclasses import dataclass
+from typing import Dict, List, Tuple
+import numpy as np
+
+
+@dataclass
+class DBCandidate:
+    smiles: str
+    inchikey14: str
+    tanimoto_score: float
+    source_tier: str = "track2_db"
+
+
+class SoftDatabaseSearcher:
+    """Track 2: Soft formula-sliced candidate retrieval with vectorized Tanimoto scoring & fallback."""
+
+    def __init__(
+        self,
+        db: Dict[str, List[Tuple[str, str, np.ndarray]]],
+        fallback_scaffolds: List[Tuple[str, str, np.ndarray]],
+    ):
+        self.db = db
+        self.fallback_scaffolds = fallback_scaffolds
+
+    def batch_tanimoto(self, query_fp: np.ndarray, db_fps: np.ndarray) -> np.ndarray:
+        """Vectorized Tanimoto calculation over 2D candidate fingerprint matrix."""
+        if db_fps.shape[0] == 0:
+            return np.array([], dtype=np.float32)
+        q = query_fp.astype(np.float32)
+        fps = db_fps.astype(np.float32)
+        intersection = np.dot(fps, q)
+        query_sum = np.sum(q)
+        db_sums = np.sum(fps, axis=1)
+        union = db_sums + query_sum - intersection
+        return np.where(union > 0, intersection / (union + 1e-12), 0.0).astype(np.float32)
+
+    def tanimoto(self, fp1: np.ndarray, fp2: np.ndarray) -> float:
+        """Pairwise Tanimoto similarity."""
+        intersection = float(np.sum(np.logical_and(fp1, fp2)))
+        union = float(np.sum(np.logical_or(fp1, fp2)))
+        if union <= 0:
+            return 0.0
+        return float(intersection / (union + 1e-12))
+
+    def search_formulas(
+        self, formulas: List[str], query_fp: np.ndarray
+    ) -> List[DBCandidate]:
+        candidates: List[DBCandidate] = []
+        seen_ik14 = set()
+
+        batch_mols: List[Tuple[str, str]] = []
+        batch_fps: List[np.ndarray] = []
+
+        for form in formulas:
+            for smiles, ik14, mol_fp in self.db.get(form, []):
+                if ik14 in seen_ik14:
+                    continue
+                seen_ik14.add(ik14)
+                batch_mols.append((smiles, ik14))
+                batch_fps.append(mol_fp)
+
+        if batch_fps:
+            fps_matrix = np.stack(batch_fps, axis=0)
+            scores = self.batch_tanimoto(query_fp, fps_matrix)
+            for (smiles, ik14), score in zip(batch_mols, scores):
+                candidates.append(
+                    DBCandidate(
+                        smiles=smiles,
+                        inchikey14=ik14,
+                        tanimoto_score=float(score),
+                    )
+                )
+
+        # Fallback if zero candidates found
+        if not candidates:
+            for smiles, ik14, mol_fp in self.fallback_scaffolds[:25]:
+                candidates.append(
+                    DBCandidate(
+                        smiles=smiles,
+                        inchikey14=ik14,
+                        tanimoto_score=0.01,
+                        source_tier="track2_fallback",
+                    )
+                )
+
+        candidates.sort(key=lambda x: x.tanimoto_score, reverse=True)
+        return candidates
