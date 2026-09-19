@@ -19,6 +19,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple, Union
 
+import pandas as pd
+
 logger = logging.getLogger(__name__)
 
 # Curated bank of 40+ chemically valid, neutral, simple reference molecules
@@ -225,6 +227,24 @@ def validate_submission_file(
             errors.append(f"Unexpected {len(extra)} extra molecule_ids: {list(extra)[:5]}...")
 
     return len(errors) == 0, errors
+
+
+def validate_submission(df: pd.DataFrame, expected_ids: List[str]) -> bool:
+    """Validate all structural submission invariants required for Kaggle scoring."""
+    assert "id" in df.columns, "Submission must contain 'id' column"
+    assert "candidates" in df.columns, "Submission must contain 'candidates' column"
+    assert len(df) == len(expected_ids), f"Row count mismatch: got {len(df)}, expected {len(expected_ids)}"
+    assert set(df["id"]) == set(expected_ids), "Spectrum IDs do not match expected test set IDs"
+
+    for idx, row in df.iterrows():
+        raw_val = row["candidates"]
+        assert pd.notna(raw_val), f"Row {idx} contains empty or NaN candidate"
+        cands = str(raw_val).split(";")
+        assert len(cands) == 25, f"Row {idx} has {len(cands)} candidates; expected exactly 25"
+        assert len(set(cands)) == 25, f"Row {idx} contains duplicate InChIKey14 entries"
+        assert all(c and c.lower() != "nan" for c in cands), f"Row {idx} contains empty or NaN candidate"
+        assert all(len(c) == 14 and c.isalnum() for c in cands), f"Row {idx} has invalid InChIKey14 string"
+    return True
 
 
 def write_submission(

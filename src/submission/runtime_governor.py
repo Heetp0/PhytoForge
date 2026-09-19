@@ -297,3 +297,18 @@ class RuntimeGovernor:
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
         return out_path
+
+
+class DynamicRuntimeGovernor:
+    """Dynamic per-spectrum wall-clock tracking based on 21.3s / spectrum baseline."""
+    def __init__(self, total_budget_seconds: float = 32400.0, reserve_seconds: float = 480.0):
+        self.total_budget_seconds = total_budget_seconds
+        self.reserve_seconds = reserve_seconds
+        self.available_time = total_budget_seconds - reserve_seconds
+
+    def get_per_spectrum_budget(self, elapsed_seconds: float, spectra_remaining: int) -> float:
+        if spectra_remaining <= 0:
+            return 1.0
+        remaining_time = max(10.0, self.available_time - elapsed_seconds)
+        return float(remaining_time / spectra_remaining)
+
