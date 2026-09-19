@@ -46,7 +46,7 @@ class SpectrumData:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
-        if self.precursor_mz <= 0:
+        if not (self.precursor_mz > 0) or np.isnan(self.precursor_mz):
             raise ValueError(f"precursor_mz must be strictly positive, got {self.precursor_mz}")
         if not isinstance(self.mz_array, np.ndarray):
             self.mz_array = np.array(self.mz_array, dtype=np.float64)
@@ -124,6 +124,14 @@ def filter_and_normalize_peaks(
       3. Sorts retained peaks ascending by m/z.
       4. Normalizes base peak intensity to target_base_intensity.
     """
+    if len(mz_array) == 0 or len(intensity_array) == 0:
+        return np.zeros(0, dtype=np.float64), np.zeros(0, dtype=np.float64)
+
+    # Filter out non-finite (NaN, Inf) values
+    valid_mask = np.isfinite(mz_array) & np.isfinite(intensity_array) & (intensity_array > 0)
+    mz_array = mz_array[valid_mask]
+    intensity_array = intensity_array[valid_mask]
+
     if len(mz_array) == 0:
         return np.zeros(0, dtype=np.float64), np.zeros(0, dtype=np.float64)
 
@@ -200,11 +208,15 @@ class SpectrumLoader:
         adduct = str(data.get("adduct", "[M+H]+"))
         
         # Normalize polarity string
-        pol_raw = str(data.get("polarity", "positive")).lower()
-        if pol_raw in ["+", "1", "pos", "positive"]:
-            polarity = "positive"
-        elif pol_raw in ["-", "-1", "neg", "negative"]:
-            polarity = "negative"
+        pol_raw = data.get("polarity")
+        if pol_raw is not None and not pd.isna(pol_raw):
+            pol_str = str(pol_raw).lower().strip()
+            if pol_str in ["+", "1", "pos", "positive"]:
+                polarity = "positive"
+            elif pol_str in ["-", "-1", "neg", "negative"]:
+                polarity = "negative"
+            else:
+                polarity = "positive" if "+" in adduct else "negative"
         else:
             polarity = "positive" if "+" in adduct else "negative"
 
@@ -218,9 +230,13 @@ class SpectrumLoader:
             mzs, ints = filter_and_normalize_peaks(mzs, ints, max_peaks=max_peaks)
 
         smiles = data.get("smiles")
-        ik14 = data.get("inchikey14")
-        if ik14 and len(ik14) > 14:
-            ik14 = ik14.split("-")[0][:14]
+        ik14_raw = data.get("inchikey14")
+        if ik14_raw is not None and not pd.isna(ik14_raw):
+            ik14 = str(ik14_raw).strip()
+            if len(ik14) > 14:
+                ik14 = ik14.split("-")[0][:14]
+        else:
+            ik14 = None
 
         nm_raw = data.get("neutral_mass")
         neutral_mass = float(nm_raw) if nm_raw is not None and not pd.isna(nm_raw) else None

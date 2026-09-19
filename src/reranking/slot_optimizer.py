@@ -71,6 +71,10 @@ class DecisionTheoreticSlotOptimizer:
                 val = cand.get("inchikey14")
                 if isinstance(val, str):
                     return val
+            elif hasattr(cand, "inchikey14"):
+                val = getattr(cand, "inchikey14")
+                if isinstance(val, str):
+                    return val
             elif isinstance(cand, str):
                 return cand
             return None

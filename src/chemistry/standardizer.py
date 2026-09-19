@@ -48,6 +48,8 @@ def standardize_mol(smiles: Optional[str]) -> Tuple[Optional[str], Optional[str]
         return None, None
 
     clean_smiles = smiles.strip()
+    if len(clean_smiles) > 2000:
+        return None, None
 
     if not _RDKIT_AVAILABLE:
         # Fallback hash if RDKit is not yet initialized
