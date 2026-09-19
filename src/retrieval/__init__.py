@@ -14,6 +14,10 @@ from src.retrieval.mist_formula_router import (
     FormulaRoutingDecision,
     MISTFormulaRouter,
 )
+from src.retrieval.transductive_networking import (
+    NetworkCandidate,
+    TransductiveMolecularNetwork,
+)
 
 __all__ = [
     "BoundedGenerativeEngine",
@@ -22,6 +26,8 @@ __all__ = [
     "FormulaRoutingDecision",
     "GenerativeCandidate",
     "MISTFormulaRouter",
+    "NetworkCandidate",
     "RetrievedCandidate",
     "SoftDatabaseSearcher",
+    "TransductiveMolecularNetwork",
 ]
