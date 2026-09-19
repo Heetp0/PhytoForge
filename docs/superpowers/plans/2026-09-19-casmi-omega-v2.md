@@ -244,7 +244,7 @@ git commit -m "feat(data): add multi-energy spectral fusion engine with collisio
 - Consumes: Precursor $m/z$, adduct, peak array.
 - Produces: `FormulaRoutingDecision(formulas: List[str], entropy: float, use_formula_free_fallback: bool)`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/test_mist_formula_router.py
@@ -271,12 +271,12 @@ def test_high_entropy_triggers_fallback():
     assert decision.use_formula_free_fallback
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `python -m pytest tests/test_mist_formula_router.py -v`  
 Expected: FAIL with `ModuleNotFoundError: No module named 'src.retrieval.mist_formula_router'`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 ```python
 # src/retrieval/mist_formula_router.py
@@ -353,12 +353,12 @@ class MISTFormulaRouter:
         )
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest tests/test_mist_formula_router.py -v`  
 Expected: PASS (2 passed).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/retrieval/mist_formula_router.py tests/test_mist_formula_router.py

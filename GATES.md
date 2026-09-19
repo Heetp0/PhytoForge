@@ -15,10 +15,10 @@ Scope: End-to-end implementation and verification of the CASMI-Omega v2 molecula
   EXPECT: 9 passed
   EVIDENCE: Passed in commit a6f0132 (9 passed in 0.24s, 0 regressions in test_m1_chemistry_submission.py and test_chemistry_physics.py)
 
-- [ ] G3: MIST-CF Soft Formula Router expands top-3 formula posteriors (+-1H, +-1O) and triggers high-entropy fallback
+- [x] G3: MIST-CF Soft Formula Router expands top-3 formula posteriors (+-1H, +-1O) and triggers high-entropy fallback
   CHECK: python -m pytest tests/test_mist_formula_router.py -v
   EXPECT: 2 passed
-  EVIDENCE: pending
+  EVIDENCE: Passed in commit cffb9c7 (5 passed in 0.07s, 0 regressions in test_chemistry_physics.py, test_multi_energy_fusion.py, test_m1_chemistry_submission.py)
 
 - [ ] G4: Track 1 Calibrated DreaMS Library Retrieval retrieves with instrument-stratified thresholds and FP16 re-scoring
   CHECK: python -m pytest tests/test_dreams_retrieval.py -v
