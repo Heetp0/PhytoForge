@@ -40,7 +40,7 @@
 - Consumes: Raw precursor $m/z$, adduct name, optional molecular formula / atom counts.
 - Produces: `calculate_canonical_neutral_mass(mz, adduct, formula=None) -> float`, `get_multihypothesis_precursor_candidates(mz, adduct, mw_estimate=None) -> List[Tuple[float, str, float]]`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/test_chemistry_physics.py
@@ -75,12 +75,12 @@ def test_13c_multi_isotopologue_deconvolution():
     assert "M-2_13C" in offsets
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `python -m pytest tests/test_chemistry_physics.py -v`  
 Expected: FAIL with `ImportError: cannot import name 'calculate_canonical_neutral_mass'`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 In `src/chemistry/adducts.py`, add `calculate_canonical_neutral_mass` and `get_multihypothesis_precursor_candidates`:
 
@@ -116,12 +116,12 @@ def get_multihypothesis_precursor_candidates(
     return results
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest tests/test_chemistry_physics.py -v`  
 Expected: PASS (2 passed).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/chemistry/adducts.py tests/test_chemistry_physics.py

@@ -4,10 +4,11 @@ OWNS: src/**, tests/**, configs/**, submissions/**
 
 Scope: End-to-end implementation and verification of the CASMI-Omega v2 molecular identification pipeline for Kaggle Enveda CASMI 2026.
 
-- [ ] G1: Chemistry Physics Preprocessor passes physical plausibility (O >= 2 for [M-2H2O+H]+) and 13C multi-isotopologue deconvolution
+- [x] G1: Chemistry Physics Preprocessor passes physical plausibility (O >= 2 for [M-2H2O+H]+) and 13C multi-isotopologue deconvolution
   CHECK: python -m pytest tests/test_chemistry_physics.py -v
-  EXPECT: 2 passed
-  EVIDENCE: pending
+  EXPECT: 3 passed
+  EVIDENCE: Passed in commit 32777f8 (3 passed in 0.29s, 0 regressions in test_m1_chemistry_submission.py)
+
 
 - [ ] G2: Multi-Energy Spectral Fusion Engine correctly fuses per-collision energy DreaMS embeddings with attention weighting
   CHECK: python -m pytest tests/test_multi_energy_fusion.py -v
