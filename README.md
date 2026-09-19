@@ -11,26 +11,26 @@ $$
 $$
 
 - Ground truth matching uses `InChIKey14`, the first 14-character block representing two-dimensional planar connectivity without stereochemistry.
-- Predictions contain up to 25 semicolon-separated candidate keys per test spectrum.
+- Predictions contain exactly 25 semicolon-separated unique candidate keys per test spectrum.
 
 ## System architecture
 
 The pipeline consists of five interconnected modules designed to run within Kaggle offline constraints (16 GB GPU memory and 9 hours total runtime):
 
 1. Preprocessing and deconvolution
-   - Checks precursor adduct feasibility, requiring at least two oxygen atoms for neutral water loss.
-   - Deconvolutes carbon-13 multi-isotopologue patterns on high-mass ions.
+   - Checks precursor adduct feasibility, requiring at least one oxygen atom for single water loss and two oxygen atoms for double water loss.
+   - Deconvolutes carbon-13 multi-isotopologue patterns on high-mass ions using exact isotopic spacing (1.003355 Da).
 2. Tri-track candidate generation
-   - Track 1: Instrument-stratified cosine search over 1024-dimensional DreaMS embeddings derived from attention-weighted multi-energy collision spectra (20, 35, and 50 eV).
-   - Track 2: Formula-conditioned database querying using MIST-CF top-3 chemical formula posteriors and vectorized 4096-bit Morgan fingerprint similarities.
-   - Track 3: Bounded generative de novo sampling executed under a strict 10-second timeout.
+   - Track 1: Instrument-stratified cosine search over 1024-dimensional DreaMS embeddings derived from late attention-weighted pooling across stepped collision energy frames (20, 35, and 50 eV).
+   - Track 2: Formula-conditioned database querying using MIST-CF top-3 chemical formula posteriors with Shannon entropy gating, plus/minus 1H, plus/minus 1O envelope expansion, and vectorized 4096-bit Morgan fingerprint similarities.
+   - Track 3: Bounded autoregressive generative de novo sampling executed with INT4 quantization under a strict 10-second timeout ceiling.
 3. Transductive botanical networking
    - Connects unannotated spectra across the test set using characteristic plant secondary metabolism mass shifts (+132.0423 Da for pentosyl, +162.0528 Da for hexosyl, and +146.0579 Da for rhamnosyl modifications).
    - Validates candidate links against shared MS/MS fragment peaks.
 4. Meta-ranking and portfolio optimization
    - Extracts 32 features spanning spectral similarity, formula probability, and molecular physical descriptors.
    - Scores candidates using a LambdaMART gradient boosted decision tree.
-   - Allocates 25 output slots through expected reciprocal rank optimization to balance top-rank precision and structural diversity.
+   - Allocates exactly 25 output slots through a decision-theoretic expected MRR@25 portfolio optimizer to balance top-rank precision and structural diversity.
 5. Runtime governance and submission validation
    - Manages execution time dynamically with a 21.3 seconds per spectrum budget governor.
    - Enforces formatting rules: exactly 25 unique alphanumeric InChIKey14 values per query, semicolon delimiters, and zero null values.
@@ -45,6 +45,7 @@ cd phytoforge
 
 # Install dependencies
 pip install -r requirements.txt
+pip install -e .
 ```
 
 ### Running the pipeline
@@ -80,9 +81,9 @@ enveda-casmi-2026/
 ├── notebooks/        # Data exploration and local validation notebooks
 ├── src/              # Core pipeline packages
 │   ├── chemistry/    # Adduct calculator, formula utils, and InChIKey tools
-│   ├── data/         # Preprocessors, parquet readers, and transductive network
+│   ├── data/         # Preprocessors, parquet readers, and multi-energy fusion
 │   ├── reranking/    # LambdaMART ranker, feature extractor, and slot optimizer
-│   ├── retrieval/    # DreaMS search, multi-energy fusion, and de novo engine
+│   ├── retrieval/    # DreaMS search, transductive network, and de novo engine
 │   └── submission/   # Runtime governor, pipeline runner, and submission validator
 ├── submissions/      # Generated competition submission files
 └── tests/            # Test suite covering all 12 pipeline acceptance gates
@@ -94,7 +95,7 @@ The codebase includes an automated test suite verifying all 12 engineering accep
 
 ```bash
 # Run the complete test suite
-pytest tests/ -v
+python -m pytest tests/ -v
 ```
 
 Test results:

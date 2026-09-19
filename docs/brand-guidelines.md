@@ -1,7 +1,7 @@
 # Brand guidelines: PhytoForge
 
 ## Project overview
-PhytoForge is an open-source software library for identifying molecular structures from tandem mass spectrometry (MS/MS) data. It is developed for the Enveda CASMI 2026 competition, which evaluates predictions by Mean Reciprocal Rank at 25 (MRR@25) on planar InChIKey14 strings.
+PhytoForge is an open-source software library for identifying molecular structures from tandem mass spectrometry (MS/MS) data. It is developed for the Enveda CASMI 2026 competition, which evaluates predictions by Mean Reciprocal Rank at 25 (MRR@25) on RDKit tautomer-canonicalized planar InChIKey14 strings.
 
 ## Name and naming rules
 
@@ -22,7 +22,7 @@ PhytoForge is an open-source software library for identifying molecular structur
 - Do not add hyphenated competition tags like `phytoforge-casmi2026` to package names.
 
 ## Positioning statement
-PhytoForge identifies chemical structures from high-resolution Bruker timsTOF MS/MS data within offline resource budgets (16 GB VRAM and a 9-hour total execution limit). It combines precursor adduct deconvolution, multi-energy DreaMS embedding retrieval, MIST-CF chemical formula routing, botanical mass-shift propagation, and bounded generative sampling. Candidates are ranked with a 32-feature LambdaMART model and arranged using an expected reciprocal rank portfolio optimizer.
+PhytoForge identifies chemical structures from high-resolution Bruker timsTOF MS/MS data within offline resource budgets (16 GB VRAM and a 9-hour total execution limit). It processes stepped collision energy frames (20, 35, and 50 eV) and performs precursor adduct deconvolution, requiring at least one oxygen atom for single water loss and two for double water loss. The system combines late-pooled 1024-dimensional DreaMS embeddings, MIST-CF chemical formula routing with neighborhood expansion, transductive botanical mass-shift propagation (+132.0423 Da pentosyl, +162.0528 Da hexosyl, and +146.0579 Da rhamnosyl modifications), and bounded autoregressive generative sampling under a 10-second timeout. Candidate structures are scored with a 32-feature LambdaMART meta-ranker and assembled using a decision-theoretic expected MRR@25 portfolio optimizer to output exactly 25 unique InChIKey14 candidates per spectrum.
 
 ## Taglines
 - Primary: Transductive botanical MS/MS deconvolution and portfolio ranking for plant metabolomics.
@@ -37,17 +37,17 @@ PhytoForge identifies chemical structures from high-resolution Bruker timsTOF MS
 
 ### Package import
 ```python
-import phytoforge as pf
-from phytoforge.pipeline import PhytoForgePipeline
+import src as pf
+from src.pipeline import PhytoForgePipeline
 ```
 
 ### Command-line interface
 ```bash
 # Run the pipeline under runtime and memory limits
-phytoforge run --input test.mgf --governor 21.3s --vram-cap 16gb --output submission.csv
+python -m src.submission.pipeline --input data/test.parquet --output submissions/submission.csv --governor 21.3 --vram-cap 16
 
 # Validate submission formatting against competition rules
-phytoforge validate --submission submission.csv --test-ids test_ids.txt
+python -m src.submission.validator --submission submissions/submission.csv --expected-ids data/test_ids.txt
 ```
 
 ### Color palette

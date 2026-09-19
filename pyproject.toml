@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "phytoforge"
+version = "0.1.0"
+description = "Botanical tandem mass spectrometry annotation pipeline for Enveda CASMI 2026"
+readme = "README.md"
+authors = [{ name = "Enveda CASMI Team" }]
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
+]
+
+[project.scripts]
+phytoforge = "src.submission.pipeline:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]

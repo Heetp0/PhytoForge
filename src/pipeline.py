@@ -167,3 +167,8 @@ def run_casmi_omega_pipeline(
         governor_budget_seconds=governor_budget_seconds,
     )
     return pipeline.run(test_df, output_path=output_path)
+
+
+# Official Brand Aliases for PhytoForge
+PhytoForgePipeline = CASMIOmegaPipeline
+run_phytoforge_pipeline = run_casmi_omega_pipeline
