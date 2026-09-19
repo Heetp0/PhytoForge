@@ -377,7 +377,7 @@ git commit -m "feat(retrieval): add MIST-CF soft formula router with neighborhoo
 - Consumes: Query embedding (`(1024,)`), instrument type (`str`).
 - Produces: `List[Candidate]` sorted by calibrated cosine score, with `is_locked_rank1: bool`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/test_dreams_retrieval.py
@@ -408,12 +408,12 @@ def test_fp16_rescoring_and_pinning():
     assert cands[0].score > 0.99
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `python -m pytest tests/test_dreams_retrieval.py -v`  
 Expected: FAIL with `ModuleNotFoundError: No module named 'src.retrieval.dreams_retrieval'`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 ```python
 # src/retrieval/dreams_retrieval.py
@@ -473,12 +473,12 @@ class CalibratedDreaMSRetriever:
         return scored, is_locked_rank1
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest tests/test_dreams_retrieval.py -v`  
 Expected: PASS (2 passed).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/retrieval/dreams_retrieval.py tests/test_dreams_retrieval.py
