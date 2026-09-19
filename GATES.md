@@ -55,10 +55,10 @@ Scope: End-to-end implementation and verification of the CASMI-Omega v2 molecula
   EXPECT: 2 passed
   EVIDENCE: Passed in commit 215b81a (4 passed in 0.15s, 0 regressions across 103 tests in regression suite)
 
-- [ ] G11: Unified End-to-End Pipeline integration executes from raw query to verified submission.csv with real module wiring and dynamic runtime governor
+- [x] G11: Unified End-to-End Pipeline integration executes from raw query to verified submission.csv with real module wiring and dynamic runtime governor
   CHECK: python -m pytest tests/test_e2e_pipeline.py -v
   EXPECT: 1 passed
-  EVIDENCE: pending
+  EVIDENCE: Passed in commit bcfc0e0 (4 passed in 0.36s, 0 regressions across 111 tests in regression suite)
 
 - [ ] G12: Full Project Test Suite passes with zero regressions
   CHECK: python -m pytest tests/ -q

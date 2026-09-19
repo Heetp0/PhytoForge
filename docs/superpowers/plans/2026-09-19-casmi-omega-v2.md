@@ -1272,7 +1272,7 @@ git commit -m "feat(submission): add strict submission validator and dynamic 21.
 - Consumes: Test DataFrame / list of query spectra.
 - Produces: `run_casmi_omega_pipeline(test_df, output_path)` writing validated `submission.csv`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/test_e2e_pipeline.py
@@ -1305,12 +1305,12 @@ def test_e2e_pipeline_generates_valid_submission():
             assert "IK14DREAM00001" in cands or "IK14DBFLAV0001" in cands
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `python -m pytest tests/test_e2e_pipeline.py -v`  
 Expected: FAIL with `ModuleNotFoundError: No module named 'src.pipeline'`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 ```python
 # src/pipeline.py
@@ -1463,12 +1463,12 @@ class CASMIOmegaPipeline:
         return sub_df
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest tests/test_e2e_pipeline.py -v`  
 Expected: PASS (1 passed).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/pipeline.py tests/test_e2e_pipeline.py
