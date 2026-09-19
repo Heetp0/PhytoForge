@@ -6,12 +6,13 @@ for the Enveda CASMI 2026 pipeline.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Dict, List, Optional, Tuple, Union
 import numpy as np
 
 # Physical Constants (NIST / IUPAC Monoisotopic Weights in Daltons)
 ELECTRON_MASS: float = 0.000548579909
-CARBON_13_DELTA: float = 1.00335483507  # 13C (13.003354835) - 12C (12.000000000)
+CARBON_13_DELTA: float = 1.003355  # 13C - 12C delta mass in Daltons
 PROTON_MASS: float = 1.007276452321     # 1H (1.00782503223) - electron_mass
 
 
@@ -105,6 +106,24 @@ COMPETITION_ADDUCTS: Dict[str, AdductInfo] = {
     ),
 }
 
+# Extended Adducts (for physical plausibility & multi-water-loss modeling)
+EXTENDED_ADDUCTS: Dict[str, AdductInfo] = {
+    "[M-2H2O+H]+": AdductInfo(
+        name="[M-2H2O+H]+",
+        polarity="positive",
+        charge=1,
+        mult=1,
+        delta_mass=-35.013852916,
+    ),
+    "[M-2H2O-H]-": AdductInfo(
+        name="[M-2H2O-H]-",
+        polarity="negative",
+        charge=-1,
+        mult=1,
+        delta_mass=-37.028405820,
+    ),
+}
+
 # Common spelling / formatting aliases mapped to canonical names
 ADDUCT_ALIASES: Dict[str, str] = {
     "[M+HCOO]-": "[M+FA-H]-",
@@ -112,6 +131,8 @@ ADDUCT_ALIASES: Dict[str, str] = {
     "[M+OAC]-": "[M+Hac-H]-",
     "[M+H-H2O]+": "[M-H2O+H]+",
     "[M-H-H2O]-": "[M-H2O-H]-",
+    "[M+H-2H2O]+": "[M-2H2O+H]+",
+    "[M-H-2H2O]-": "[M-2H2O-H]-",
 }
 
 
@@ -125,6 +146,9 @@ def normalize_adduct_name(adduct: str) -> str:
     for canonical in COMPETITION_ADDUCTS:
         if canonical.upper() == upper:
             return canonical
+    for canonical in EXTENDED_ADDUCTS:
+        if canonical.upper() == upper:
+            return canonical
     return cleaned
 
 
@@ -136,6 +160,8 @@ def get_adduct_info(adduct: str) -> AdductInfo:
     norm = normalize_adduct_name(adduct)
     if norm in COMPETITION_ADDUCTS:
         return COMPETITION_ADDUCTS[norm]
+    if norm in EXTENDED_ADDUCTS:
+        return EXTENDED_ADDUCTS[norm]
     raise ValueError(
         f"Unknown or unsupported adduct: '{adduct}'. "
         f"Supported adducts: {list(COMPETITION_ADDUCTS.keys())}"
@@ -275,3 +301,82 @@ def get_precursor_hypotheses(
         (observed_mz - CARBON_13_DELTA, 0.85, "13C_mispick_fallback"),
         (observed_mz - 2.0 * CARBON_13_DELTA, 0.40, "13C2_mispick_fallback"),
     ]
+
+
+def parse_formula_oxygens(formula: str) -> int:
+    """Extract count of oxygen atoms from a molecular formula string."""
+    match = re.search(r"O(?![a-z])(\d*)", formula)
+    if not match:
+        return 0
+    qty = match.group(1)
+    return int(qty) if qty else 1
+
+
+def calculate_canonical_neutral_mass(
+    mz: float,
+    adduct: str,
+    formula_oxygens: Optional[int] = None,
+    formula: Optional[str] = None,
+) -> float:
+    """
+    Calculate canonical neutral monoisotopic mass with physical plausibility validation.
+    
+    Enforces that:
+    - Double water loss ([M-2H2O+H]+, [M-2H2O-H]-) requires at least 2 oxygen atoms.
+    - Single water loss ([M-H2O+H]+, [M-H2O-H]-) requires at least 1 oxygen atom.
+    
+    Args:
+        mz: Precursor m/z value.
+        adduct: Adduct string identifier.
+        formula_oxygens: Explicit oxygen atom count if known.
+        formula: Molecular formula string (e.g. 'C15H10O7') from which oxygen count is parsed.
+        
+    Returns:
+        Canonical neutral monoisotopic mass in Daltons.
+        
+    Raises:
+        ValueError: If physical feasibility constraints are violated or adduct is invalid.
+    """
+    norm_adduct = normalize_adduct_name(adduct)
+
+    if formula_oxygens is None and formula is not None:
+        formula_oxygens = parse_formula_oxygens(formula)
+
+    if formula_oxygens is not None:
+        if "-2H2O" in norm_adduct and formula_oxygens < 2:
+            raise ValueError(f"{norm_adduct} requires at least 2 oxygen atoms in the molecule")
+        if "-H2O" in norm_adduct and "-2H2O" not in norm_adduct and formula_oxygens < 1:
+            raise ValueError(f"{norm_adduct} requires at least 1 oxygen atom in the molecule")
+
+    return calculate_neutral_mass(mz, norm_adduct)
+
+
+def get_multihypothesis_precursor_candidates(
+    mz: float,
+    adduct: str,
+    mw_estimate: Optional[float] = None,
+) -> List[Tuple[float, str, float]]:
+    """
+    Return neutral mass hypotheses including M0, M-1 (13C), and M-2 (double 13C for MW >= 400).
+    
+    Args:
+        mz: Precursor m/z value.
+        adduct: Adduct string.
+        mw_estimate: Optional molecular weight estimate. If None, derived from nominal mass.
+        
+    Returns:
+        List of (neutral_mass, hypothesis_label, prior_weight) tuples.
+    """
+    norm_adduct = normalize_adduct_name(adduct)
+    base_m = calculate_neutral_mass(mz, norm_adduct)
+    results = [(base_m, "M0", 1.0)]
+
+    # 13C offset 1 (single 13C mispick)
+    results.append((base_m - CARBON_13_DELTA, "M-1_13C", 0.35))
+
+    # 13C offset 2 for large molecules (double 13C mispick)
+    effective_mw = mw_estimate if mw_estimate is not None else base_m
+    if effective_mw >= 400.0:
+        results.append((base_m - 2.0 * CARBON_13_DELTA, "M-2_13C", 0.08))
+
+    return results
