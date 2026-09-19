@@ -10,10 +10,10 @@ Scope: End-to-end implementation and verification of the CASMI-Omega v2 molecula
   EVIDENCE: Passed in commit 32777f8 (3 passed in 0.29s, 0 regressions in test_m1_chemistry_submission.py)
 
 
-- [ ] G2: Multi-Energy Spectral Fusion Engine correctly fuses per-collision energy DreaMS embeddings with attention weighting
+- [x] G2: Multi-Energy Spectral Fusion Engine correctly fuses per-collision energy DreaMS embeddings with attention weighting
   CHECK: python -m pytest tests/test_multi_energy_fusion.py -v
-  EXPECT: 1 passed
-  EVIDENCE: pending
+  EXPECT: 9 passed
+  EVIDENCE: Passed in commit a6f0132 (9 passed in 0.24s, 0 regressions in test_m1_chemistry_submission.py and test_chemistry_physics.py)
 
 - [ ] G3: MIST-CF Soft Formula Router expands top-3 formula posteriors (+-1H, +-1O) and triggers high-entropy fallback
   CHECK: python -m pytest tests/test_mist_formula_router.py -v

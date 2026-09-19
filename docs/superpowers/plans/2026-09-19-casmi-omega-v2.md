@@ -140,7 +140,7 @@ git commit -m "feat(chemistry): add physical adduct plausibility and multi-isoto
 - Consumes: List of `QuerySpectrum` objects sharing the same `molecule_id`.
 - Produces: `fused_embedding: np.ndarray` (shape: `(1024,)`), `fused_peaks: np.ndarray`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/test_multi_energy_fusion.py
@@ -169,12 +169,12 @@ def test_multi_energy_fusion_pooling():
     assert not np.isnan(fused_emb).any()
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `python -m pytest tests/test_multi_energy_fusion.py -v`  
 Expected: FAIL with `ModuleNotFoundError: No module named 'src.data.multi_energy_fusion'`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 ```python
 # src/data/multi_energy_fusion.py
@@ -220,12 +220,12 @@ class MultiEnergyFusionEngine:
         return fused / (norm + 1e-12)
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest tests/test_multi_energy_fusion.py -v`  
 Expected: PASS (1 passed).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/data/multi_energy_fusion.py tests/test_multi_energy_fusion.py
