@@ -16,6 +16,13 @@ models/*.onnx
 models/*.bin
 models/*.safetensors
 
+# Builds & Environments
+node_modules/
+.env*
+dist/
+build/
+.next/
+
 # Agent / AI planning files (per git rules)
 implementation_plan.md
 task.md
@@ -23,6 +30,7 @@ walkthrough.md
 *.graphify*
 graphify-out/
 .agents/
+.superpowers/
 
 # OS & IDE
 .DS_Store
