@@ -1174,7 +1174,7 @@ git commit -m "feat(reranking): implement decision-theoretic planar InChIKey14 s
 - Consumes: Target DataFrame, test ID set, total time elapsed.
 - Produces: `validate_submission(df, expected_ids) -> bool`, dynamic governor per-spectrum budget.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/test_submission_governor.py
@@ -1203,12 +1203,12 @@ def test_dynamic_runtime_governor_budget():
     assert 21.2 <= budget <= 21.4
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `python -m pytest tests/test_submission_governor.py -v`  
 Expected: FAIL with `ImportError: cannot import name 'validate_submission'`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 In `src/submission/writer.py`, add `validate_submission`:
 
@@ -1248,12 +1248,12 @@ class DynamicRuntimeGovernor:
         return float(remaining_time / spectra_remaining)
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest tests/test_submission_governor.py -v`  
 Expected: PASS (2 passed).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/submission/writer.py src/submission/runtime_governor.py tests/test_submission_governor.py
