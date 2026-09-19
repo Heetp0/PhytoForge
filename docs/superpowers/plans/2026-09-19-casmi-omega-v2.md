@@ -741,7 +741,7 @@ git commit -m "feat(retrieval): implement latency-bounded generative de novo eng
 - Consumes: Test queries with neutral masses, peak arrays, and embeddings.
 - Produces: `propagate_scaffolds(query_id, solved_scaffolds) -> List[NetworkCandidate]`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/test_transductive_networking.py
@@ -789,12 +789,12 @@ def test_fragment_covalidation_rejects_insufficient_shared_peaks():
     assert len(propagated) == 0
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `python -m pytest tests/test_transductive_networking.py -v`  
 Expected: FAIL with `ModuleNotFoundError: No module named 'src.retrieval.transductive_networking'`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 ```python
 # src/retrieval/transductive_networking.py
@@ -887,12 +887,12 @@ class TransductiveMolecularNetwork:
         return results
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest tests/test_transductive_networking.py -v`  
 Expected: PASS (2 passed).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/retrieval/transductive_networking.py tests/test_transductive_networking.py

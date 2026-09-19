@@ -35,10 +35,10 @@ Scope: End-to-end implementation and verification of the CASMI-Omega v2 molecula
   EXPECT: 2 passed
   EVIDENCE: Passed in commit 7cd16bd (6 passed in 0.25s, 0 regressions across 80 tests in regression suite)
 
-- [ ] G7: Module 3 Neutral-Mass Transductive Network propagates solved scaffolds across expanded delta library (+pentose, +hexose, +rhamnose, +glucuronide, +malonyl) with >= 2 fragment co-validation peaks
+- [x] G7: Module 3 Neutral-Mass Transductive Network propagates solved scaffolds across expanded delta library (+pentose, +hexose, +rhamnose, +glucuronide, +malonyl) with >= 2 fragment co-validation peaks
   CHECK: python -m pytest tests/test_transductive_networking.py -v
   EXPECT: 2 passed
-  EVIDENCE: pending
+  EVIDENCE: Passed in commit 1710298 (6 passed in 0.12s, 0 regressions across 86 tests in regression suite)
 
 - [ ] G8: Module 4 30+ Feature GBDT Meta-Ranker extracts >= 30 multimodal features across spectral, chemical, and cross-track agreement
   CHECK: python -m pytest tests/test_meta_ranker.py -v
