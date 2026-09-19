@@ -497,7 +497,7 @@ git commit -m "feat(retrieval): implement calibrated DreaMS library retrieval wi
 - Consumes: Target formulas (`List[str]`), query fingerprint (`np.ndarray`).
 - Produces: `List[DBCandidate]` ranked by Tanimoto similarity; pads with NP diversity fallback if empty.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/test_database_search.py
@@ -527,12 +527,12 @@ def test_zero_hit_fallback_activation():
     assert hits[0].inchikey14 == "IK14_FALLBACK"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `python -m pytest tests/test_database_search.py -v`  
 Expected: FAIL with `ModuleNotFoundError: No module named 'src.retrieval.database_search'`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 ```python
 # src/retrieval/database_search.py
@@ -609,12 +609,8 @@ class SoftDatabaseSearcher:
         return candidates
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `python -m pytest tests/test_database_search.py -v`  
-Expected: PASS (2 passed).
-
-- [ ] **Step 5: Commit**
+- [x] **Step 4: Run test to verify it passes**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/retrieval/database_search.py tests/test_database_search.py

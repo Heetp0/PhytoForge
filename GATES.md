@@ -25,10 +25,10 @@ Scope: End-to-end implementation and verification of the CASMI-Omega v2 molecula
   EXPECT: 2 passed
   EVIDENCE: Passed in commit 79b8cd6 (6 passed in 0.08s, 0 regressions across 68 tests in test_chemistry_physics.py, test_multi_energy_fusion.py, test_mist_formula_router.py, test_m1_chemistry_submission.py)
 
-- [ ] G5: Track 2 Soft Database Search queries formula batches with vectorized Tanimoto scoring and NP diversity fallback
+- [x] G5: Track 2 Soft Database Search queries formula batches with vectorized Tanimoto scoring and NP diversity fallback
   CHECK: python -m pytest tests/test_database_search.py -v
   EXPECT: 2 passed
-  EVIDENCE: pending
+  EVIDENCE: Passed in commit 6c30bdc (6 passed in 0.05s, 0 regressions across 74 tests in test_chemistry_physics.py, test_multi_energy_fusion.py, test_mist_formula_router.py, test_dreams_retrieval.py, test_m1_chemistry_submission.py)
 
 - [ ] G6: Track 3 Generative De Novo Sampler enforces non-blocking execution timeout and native generation step limits
   CHECK: python -m pytest tests/test_generative_denovo.py -v
