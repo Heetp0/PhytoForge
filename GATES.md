@@ -45,10 +45,10 @@ Scope: End-to-end implementation and verification of the CASMI-Omega v2 molecula
   EXPECT: 2 passed
   EVIDENCE: Passed in commit 7017a37 (5 passed in 0.08s, 0 regressions across 92 tests in regression suite)
 
-- [ ] G9: Module 5 Planar InChIKey14 Decision-Theoretic Slot Optimizer guarantees exactly 25 unique strictly alphanumeric planar skeletons
+- [x] G9: Module 5 Planar InChIKey14 Decision-Theoretic Slot Optimizer guarantees exactly 25 unique strictly alphanumeric planar skeletons
   CHECK: python -m pytest tests/test_slot_optimizer.py -v
   EXPECT: 1 passed
-  EVIDENCE: pending
+  EVIDENCE: Passed in commit 077867c (6 passed in 0.08s, 0 regressions across 97 tests in regression suite)
 
 - [ ] G10: Module 6 Submission Integrity Validator rejects malformed rows, duplicate InChIKey14s, or NaNs, and runtime governor aligns to 21.3s/spectrum
   CHECK: python -m pytest tests/test_submission_governor.py -v

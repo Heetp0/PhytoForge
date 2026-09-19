@@ -1072,7 +1072,7 @@ git commit -m "feat(reranking): implement 30+ feature GBDT meta-ranker feature e
 - Consumes: Scored candidates list from all tracks + COCONUT NP diversity fallback list.
 - Produces: `optimize_slots(candidates) -> List[str]` returning exactly 25 unique InChIKey14s.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/test_slot_optimizer.py
@@ -1097,12 +1097,12 @@ def test_slot_optimizer_strict_25_uniques():
     assert all(len(s) == 14 and s.isalnum() for s in slots)
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `python -m pytest tests/test_slot_optimizer.py -v`  
 Expected: FAIL with `ModuleNotFoundError: No module named 'src.reranking.slot_optimizer'`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 ```python
 # src/reranking/slot_optimizer.py
@@ -1149,12 +1149,12 @@ class DecisionTheoreticSlotOptimizer:
         return slots
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest tests/test_slot_optimizer.py -v`  
 Expected: PASS (1 passed).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/reranking/slot_optimizer.py tests/test_slot_optimizer.py
