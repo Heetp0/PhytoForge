@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 
 
@@ -16,11 +19,27 @@ class SoftDatabaseSearcher:
 
     def __init__(
         self,
-        db: Dict[str, List[Tuple[str, str, np.ndarray]]],
-        fallback_scaffolds: List[Tuple[str, str, np.ndarray]],
+        db: Optional[Union[Dict[str, List[Tuple[str, str, np.ndarray]]], str, Path, Any]] = None,
+        fallback_scaffolds: Optional[List[Tuple[str, str, np.ndarray]]] = None,
+        db_path: Optional[Union[str, Path]] = None,
     ):
-        self.db = db
-        self.fallback_scaffolds = fallback_scaffolds
+        self.fallback_scaffolds = fallback_scaffolds or []
+        self.repo: Optional[Any] = None
+        self.db: Dict[str, List[Tuple[str, str, np.ndarray]]] = {}
+
+        target_db_path = db_path
+        if target_db_path is None and isinstance(db, (str, Path)):
+            target_db_path = db
+
+        if target_db_path is not None:
+            from src.data.db_indexer import ChemicalDatabaseRepository
+            self.repo = ChemicalDatabaseRepository(target_db_path)
+        elif hasattr(db, "search_by_formulas"):
+            self.repo = db
+        elif isinstance(db, dict):
+            self.db = db
+        else:
+            self.db = {}
 
     def batch_tanimoto(self, query_fp: np.ndarray, db_fps: np.ndarray) -> np.ndarray:
         """Vectorized Tanimoto calculation over 2D candidate fingerprint matrix."""
@@ -45,6 +64,40 @@ class SoftDatabaseSearcher:
     def search_formulas(
         self, formulas: List[str], query_fp: np.ndarray
     ) -> List[DBCandidate]:
+        if self.repo is not None:
+            from src.data.db_indexer import popcount_tanimoto
+
+            metadata, fps_matrix = self.repo.search_by_formulas(formulas, deduplicate=True)
+            candidates: List[DBCandidate] = []
+
+            if len(metadata) > 0 and fps_matrix.size > 0:
+                scores = popcount_tanimoto(query_fp, fps_matrix)
+                for (form, ik14, smiles), score in zip(metadata, scores):
+                    candidates.append(
+                        DBCandidate(
+                            smiles=smiles,
+                            inchikey14=ik14,
+                            tanimoto_score=float(score),
+                            source_tier="track2_db",
+                        )
+                    )
+
+            # Fallback if zero candidates found
+            if not candidates:
+                for smiles, ik14, mol_fp in self.fallback_scaffolds[:25]:
+                    candidates.append(
+                        DBCandidate(
+                            smiles=smiles,
+                            inchikey14=ik14,
+                            tanimoto_score=0.01,
+                            source_tier="track2_fallback",
+                        )
+                    )
+
+            candidates.sort(key=lambda x: x.tanimoto_score, reverse=True)
+            return candidates
+
+        # In-memory dictionary retrieval (100% backward compatible)
         candidates: List[DBCandidate] = []
         seen_ik14 = set()
 
@@ -85,3 +138,15 @@ class SoftDatabaseSearcher:
 
         candidates.sort(key=lambda x: x.tanimoto_score, reverse=True)
         return candidates
+
+    def close(self) -> None:
+        """Closes the underlying repository connection if active."""
+        if self.repo is not None and hasattr(self.repo, "close"):
+            self.repo.close()
+
+    def __enter__(self) -> SoftDatabaseSearcher:
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
+

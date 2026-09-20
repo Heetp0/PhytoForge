@@ -74,3 +74,8 @@ Scope: End-to-end implementation and verification of the CASMI-Omega v2 molecula
   CHECK: python -m pytest tests/test_dual_format_submission.py -v -W error
   EXPECT: 42 passed, 0 warnings, 0 failures
   EVIDENCE: Passed (42 passed in test_dual_format_submission.py; 582 passed in 64.48s across full suite with 0 warnings)
+
+- [x] G15: Offline Asset Indexing & Precomputation Engine (Phase 2: R1-R5)
+  CHECK: python -m pytest tests/test_db_indexer.py tests/test_spectral_indexer.py tests/test_botanical_knowledge.py tests/test_indexer_cli.py tests/test_adversarial_db_indexer.py tests/test_adversarial_spectral_indexer.py -v -W error
+  EXPECT: 157 passed, 0 warnings, 0 failures
+  EVIDENCE: Passed (111 feature tests + 46 adversarial tests passed under -W error; Tanimoto popcount benchmark verified at 0.27 ms < 2.0 ms per 10,000 candidates; 739 total regression tests passing cleanly)

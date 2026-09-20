@@ -7,13 +7,15 @@ from __future__ import annotations
 
 from typing import Any, List, Optional, Set, Tuple
 import logging
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
 # Attempt to load RDKit components; allow graceful module load if RDKit is mid-install
 try:
-    from rdkit import Chem, RDLogger
+    from rdkit import Chem, RDLogger, DataStructs
     from rdkit.Chem.MolStandardize import rdMolStandardize
+    from rdkit.Chem import rdMolDescriptors, rdFingerprintGenerator
 
     # Silence verbose C++ logging from RDKit during parsing of malformed SMILES
     RDLogger.DisableLog("rdApp.*")
@@ -22,24 +24,32 @@ try:
     _TAUTOMER_ENUMERATOR = rdMolStandardize.TautomerEnumerator()
     _TAUTOMER_ENUMERATOR.SetMaxTautomers(100)  # Bound combinatorial explosion
     _UNCHARGER = rdMolStandardize.Uncharger()
+    _MORGAN_GEN_2048 = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=2048)
     _RDKIT_AVAILABLE = True
 except ImportError:
     _RDKIT_AVAILABLE = False
     _TAUTOMER_ENUMERATOR = None
     _UNCHARGER = None
+    _MORGAN_GEN_2048 = None
 
 
-def standardize_mol(smiles: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+
+def standardize_mol(
+    smiles: Optional[str],
+    suppress_chiral: bool = False,
+) -> Tuple[Optional[str], Optional[str]]:
     """
     Standardizes a chemical structure from SMILES:
       1. Parses and sanitizes SMILES.
       2. Strips salts, solvents, and counterions to isolate the parent organic fragment.
       3. Neutralizes unquenched formal charges where chemically valid.
       4. Canonicalizes prototropic tautomers (e.g. 2-pyridone / 2-hydroxypyridine).
-      5. Generates canonical SMILES and 14-character InChIKey14 (connectivity skeleton).
+      5. Optionally suppresses chiral stereocenters for 2D connectivity matching.
+      6. Generates canonical SMILES and 14-character InChIKey14 (connectivity skeleton).
 
     Args:
         smiles: Input SMILES string.
+        suppress_chiral: If True, strips stereochemistry flags for 2D connectivity matching.
 
     Returns:
         (canonical_smiles, inchikey14) tuple, or (None, None) if parsing/standardization fails.
@@ -48,7 +58,7 @@ def standardize_mol(smiles: Optional[str]) -> Tuple[Optional[str], Optional[str]
         return None, None
 
     clean_smiles = smiles.strip()
-    if len(clean_smiles) > 2000:
+    if len(clean_smiles) > 2000 or not clean_smiles.isascii() or "\x00" in clean_smiles:
         return None, None
 
     if not _RDKIT_AVAILABLE:
@@ -77,6 +87,10 @@ def standardize_mol(smiles: Optional[str]) -> Tuple[Optional[str], Optional[str]
         canonical_mol = _TAUTOMER_ENUMERATOR.Canonicalize(neutral_mol)
         if canonical_mol is None:
             canonical_mol = neutral_mol
+
+        # Optional Stage 3b: Chiral suppression for 2D connectivity matching
+        if suppress_chiral:
+            Chem.RemoveStereochemistry(canonical_mol)
 
         # Stage 4: Canonical SMILES and InChIKey14 Generation
         canonical_smiles = Chem.MolToSmiles(canonical_mol, canonical=True)
@@ -159,3 +173,93 @@ def deduplicate_smiles_list(smiles_list: List[str]) -> List[Tuple[str, str]]:
             unique_candidates.append((canon_smi, ik14))
 
     return unique_candidates
+
+
+def compute_hill_formula(mol_or_smiles: Any) -> Optional[str]:
+    """
+    Computes the canonical Hill system formula for a chemical structure.
+    Hill system convention:
+      - Carbon first, Hydrogen second, then all other elements alphabetically.
+      - If no Carbon, all elements alphabetically.
+
+    Args:
+        mol_or_smiles: RDKit Mol object or SMILES string.
+
+    Returns:
+        Hill formula string (e.g. 'C9H8O4'), or None if parsing/computation fails.
+    """
+    if mol_or_smiles is None:
+        return None
+
+    if not _RDKIT_AVAILABLE:
+        return None
+
+    try:
+        if isinstance(mol_or_smiles, str):
+            clean = mol_or_smiles.strip()
+            if not clean:
+                return None
+            mol = Chem.MolFromSmiles(clean)
+        elif isinstance(mol_or_smiles, Chem.Mol):
+            mol = mol_or_smiles
+        else:
+            return None
+
+        if mol is None:
+            return None
+
+        return rdMolDescriptors.CalcMolFormula(mol)
+    except Exception:
+        return None
+
+
+def compute_morgan_fingerprint(
+    mol_or_smiles: Any,
+    radius: int = 2,
+    n_bits: int = 2048,
+) -> Optional[np.ndarray]:
+    """
+    Computes a 2048-bit Morgan fingerprint (radius=2, ECFP4 equivalent) packed
+    into 32 uint64 words (256 bytes) using little-endian bit order.
+
+    Args:
+        mol_or_smiles: RDKit Mol object or SMILES string.
+        radius: Morgan radius (default 2 for ECFP4).
+        n_bits: Number of bits (default 2048).
+
+    Returns:
+        1D numpy array of shape (32,) and dtype np.uint64, or None on error.
+    """
+    if mol_or_smiles is None:
+        return None
+
+    if not _RDKIT_AVAILABLE:
+        return None
+
+    try:
+        if isinstance(mol_or_smiles, str):
+            clean = mol_or_smiles.strip()
+            if not clean:
+                return None
+            mol = Chem.MolFromSmiles(clean)
+        elif isinstance(mol_or_smiles, Chem.Mol):
+            mol = mol_or_smiles
+        else:
+            return None
+
+        if mol is None:
+            return None
+
+        if radius == 2 and n_bits == 2048 and _MORGAN_GEN_2048 is not None:
+            gen = _MORGAN_GEN_2048
+        else:
+            gen = rdFingerprintGenerator.GetMorganGenerator(radius=radius, fpSize=n_bits)
+
+        fp = gen.GetFingerprint(mol)
+        arr = np.zeros((n_bits,), dtype=np.uint8)
+        DataStructs.ConvertToNumpyArray(fp, arr)
+        packed_u8 = np.packbits(arr, bitorder="little")
+        return np.frombuffer(packed_u8.tobytes(), dtype=np.uint64).copy()
+    except Exception:
+        return None
+
