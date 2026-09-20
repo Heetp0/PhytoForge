@@ -79,3 +79,18 @@ Scope: End-to-end implementation and verification of the CASMI-Omega v2 molecula
   CHECK: python -m pytest tests/test_db_indexer.py tests/test_spectral_indexer.py tests/test_botanical_knowledge.py tests/test_indexer_cli.py tests/test_adversarial_db_indexer.py tests/test_adversarial_spectral_indexer.py -v -W error
   EXPECT: 157 passed, 0 warnings, 0 failures
   EVIDENCE: Passed (111 feature tests + 46 adversarial tests passed under -W error; Tanimoto popcount benchmark verified at 0.27 ms < 2.0 ms per 10,000 candidates; 739 total regression tests passing cleanly)
+
+- [x] G16: Phase 3 Fragment Library & BRICS Knapsack Assembler (R1-R3)
+  CHECK: python -m pytest tests/test_brics_knapsack.py tests/test_fragment_library.py -v -W error
+  EXPECT: 31 passed, 0 warnings, 0 failures
+  EVIDENCE: Passed (31 passed in 0.58s with -W error; verified dummy atom stripping, neutral loss library int-keys, and knapsack assembler meet-in-the-middle)
+
+- [x] G17: Phase 3 Pipeline Context Manager & End-to-End Integration (R5-R6)
+  CHECK: python -m pytest tests/test_pipeline_phase3.py -v -W error
+  EXPECT: 13 passed, 0 warnings, 0 failures
+  EVIDENCE: Passed (13 passed in 12.22s with -W error; verified pipeline context manager, db_path dependency injection, Track K knapsack candidate aggregation, 5-spectrum E2E dry-run in <15s, and dual output schemas)
+
+- [x] G18: Phase 3 Full Repository Test Suite & Adversarial Stress Verification
+  CHECK: python -m pytest tests/ -q -W error
+  EXPECT: 818 passed, 0 warnings, 0 failures
+  EVIDENCE: Passed (818 passed, 0 warnings, 0 failures in 248.41s across all 37 test modules with -W error; full regression and adversarial suite clean, 0 timeouts, strict governor compliance)

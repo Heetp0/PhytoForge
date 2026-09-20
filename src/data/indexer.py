@@ -1,10 +1,11 @@
 """PhytoForge offline asset indexing, precomputation, and validation CLI engine.
 
-Unified CLI entrypoint providing four subcommands:
+Unified CLI entrypoint providing five subcommands:
 - index-db: Standardize chemical structures and construct high-performance SQLite candidate database.
 - index-spectra: Construct memory-mapped FP16 reference spectral vector index with aligned Parquet metadata.
 - validate-index: Verify structural integrity, schema constraints, and row alignment of database and spectral indexes.
 - benchmark: Measure popcount Tanimoto scoring latency across 10,000 candidates against the < 2.0 ms threshold.
+- build-fragments: Build neutral loss fragment library from observed MS/MS spectra.
 """
 
 from __future__ import annotations
@@ -435,6 +436,42 @@ def build_parser() -> argparse.ArgumentParser:
         "--threshold-ms", type=float, default=2.0, help="Maximum acceptable latency in ms (default: 2.0)"
     )
 
+    # 5. build-fragments
+    p_bf = subparsers.add_parser(
+        "build-fragments",
+        help="Build fragment library from observed neutral losses in training spectra",
+    )
+    p_bf.add_argument(
+        "--input",
+        type=str,
+        required=True,
+        help="Path to input training spectra file (CSV or Parquet)",
+    )
+    p_bf.add_argument(
+        "--output",
+        type=str,
+        required=True,
+        help="Path to output fragment library file (.pkl or .json)",
+    )
+    p_bf.add_argument(
+        "--smiles-col",
+        type=str,
+        default="smiles",
+        help="SMILES column name for candidate labels (default: 'smiles')",
+    )
+    p_bf.add_argument(
+        "--min-intensity",
+        type=float,
+        default=0.01,
+        help="Minimum peak relative intensity threshold (default: 0.01)",
+    )
+    p_bf.add_argument(
+        "--max-mass",
+        type=float,
+        default=500.0,
+        help="Maximum neutral loss mass in Daltons (default: 500.0)",
+    )
+
     return parser
 
 
@@ -535,6 +572,57 @@ def main(args: Optional[List[str]] = None) -> None:
                 )
                 sys.exit(1)
             print("Benchmark PASSED.")
+
+        elif cmd == "build-fragments":
+            inp_path = Path(parsed_args.input)
+            if not inp_path.exists():
+                print(f"Error: Input file does not exist: {inp_path}", file=sys.stderr)
+                sys.exit(1)
+
+            if parsed_args.min_intensity < 0.0 or parsed_args.min_intensity > 1.0:
+                print(
+                    f"Error: min-intensity must be between 0.0 and 1.0, got {parsed_args.min_intensity}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+            if parsed_args.max_mass <= 0.0:
+                print(
+                    f"Error: max-mass must be positive, got {parsed_args.max_mass}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+            ext = inp_path.suffix.lower()
+            if ext not in (".parquet", ".pq", ".csv", ".tsv", ".txt"):
+                print(
+                    f"Error: Unsupported input file format '{ext}'. Must be .parquet or .csv",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+            from src.reranking.fragment_library import NeutralLossLibrary
+
+            out_path = Path(parsed_args.output)
+            library = NeutralLossLibrary(
+                min_intensity=parsed_args.min_intensity,
+                max_mass=parsed_args.max_mass,
+            )
+
+            stats = library.build_from_file(
+                inp_path,
+                min_intensity=parsed_args.min_intensity,
+                max_mass=parsed_args.max_mass,
+                smiles_col=parsed_args.smiles_col,
+            )
+            library.save(out_path)
+
+            print(
+                f"Successfully built fragment library into {out_path}:\n"
+                f"  Total spectra processed: {stats['total_spectra']}\n"
+                f"  Unique millimass keys in library: {stats['unique_keys']}\n"
+                f"  Output path: {out_path}"
+            )
 
     except Exception as exc:
         print(f"Error executing '{cmd}': {exc}", file=sys.stderr)

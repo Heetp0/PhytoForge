@@ -9,11 +9,11 @@ class CandidateFeatureVector:
 
 
 class GBDTMetaRanker:
-    """Module 4: 30+ Feature GBDT LambdaMART Meta-Ranker."""
+    """Module 4: 33-Feature GBDT LambdaMART Meta-Ranker."""
 
     def __init__(self, weights: Optional[np.ndarray] = None):
         # Default heuristic weights if offline model not loaded
-        self.weights = weights if weights is not None else np.ones(32, dtype=np.float32)
+        self.weights = weights if weights is not None else np.ones(33, dtype=np.float32)
 
     def extract_feature_vector(
         self,
@@ -44,7 +44,7 @@ class GBDTMetaRanker:
         unassigned_peak_ratio: float = 0.15,
         composite_prior_confidence: float = 0.75,
     ) -> np.ndarray:
-        vec = np.zeros(32, dtype=np.float32)
+        vec = np.zeros(33, dtype=np.float32)
         # 1. Spectral similarities
         vec[0] = dreams_cosine
         vec[1] = entropy_similarity
@@ -63,12 +63,13 @@ class GBDTMetaRanker:
         vec[10] = 1.0 if cross_track_agreement_count >= 2 else 0.0
         # 6. Formula rank
         vec[11] = 1.0 / float(max(1, formula_rank))
-        # 7. One-hot source tracks (indices 12-15)
+        # 7. One-hot source tracks (indices 12-15, and index 32 for track_knapsack)
         track_map = {
             "track1_dreams": 12,
             "track2_db": 13,
             "track3_denovo": 14,
             "track_network": 15,
+            "track_knapsack": 32,
         }
         if source_track in track_map:
             vec[track_map[source_track]] = 1.0

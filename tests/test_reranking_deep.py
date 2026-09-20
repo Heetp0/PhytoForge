@@ -9,7 +9,7 @@ def test_extract_feature_vector_dimensionality():
     ranker = GBDTMetaRanker()
     vec = ranker.extract_feature_vector(0, 0, 0, 0, 0, 0, 0, 0, 0, "unknown")
     assert isinstance(vec, np.ndarray)
-    assert vec.shape == (32,)
+    assert vec.shape == (33,)
 
 def test_extract_feature_vector_all_zeros():
     ranker = GBDTMetaRanker()
@@ -35,7 +35,7 @@ def test_score_candidates_empty_list():
 
 def test_score_candidates_keys_added():
     ranker = GBDTMetaRanker()
-    cand = {"features": np.zeros(32)}
+    cand = {"features": np.zeros(33)}
     res = ranker.score_candidates([cand])
     assert "score" in res[0]
     assert "meta_score" in res[0]
@@ -43,11 +43,11 @@ def test_score_candidates_keys_added():
 def test_score_candidates_order_descending():
     ranker = GBDTMetaRanker()
     cands = [
-        {"id": 1, "features": np.zeros(32)},
-        {"id": 2, "features": np.ones(32)}
+        {"id": 1, "features": np.zeros(33)},
+        {"id": 2, "features": np.ones(33)}
     ]
     res = ranker.score_candidates(cands)
-    # np.ones will have a higher score than np.zeros since weights are np.ones(32)
+    # np.ones will have a higher score than np.zeros since weights are np.ones(33)
     assert res[0]["id"] == 2
     assert res[1]["id"] == 1
 
@@ -79,6 +79,13 @@ def test_source_track_one_hot_unknown():
     ranker = GBDTMetaRanker()
     vec = ranker.extract_feature_vector(0, 0, 0, 0, 0, 0, 0, 0, 0, "unknown_track")
     assert sum(vec[12:16]) == 0.0
+    assert vec[32] == 0.0
+
+def test_source_track_one_hot_track_knapsack():
+    ranker = GBDTMetaRanker()
+    vec = ranker.extract_feature_vector(0, 0, 0, 0, 0, 0, 0, 0, 0, "track_knapsack")
+    assert vec[32] == 1.0
+    assert sum(vec[12:16]) == 0.0
 
 def test_feature_vector_deterministic():
     ranker = GBDTMetaRanker()
@@ -88,11 +95,11 @@ def test_feature_vector_deterministic():
 
 def test_score_candidates_single():
     ranker = GBDTMetaRanker()
-    res = ranker.score_candidates([{"features": np.zeros(32)}])
+    res = ranker.score_candidates([{"features": np.zeros(33)}])
     assert len(res) == 1
 
 def test_candidate_feature_vector_instantiation():
-    vec = np.zeros(32)
+    vec = np.zeros(33)
     obj = CandidateFeatureVector(features=vec)
     assert obj.features is vec
 

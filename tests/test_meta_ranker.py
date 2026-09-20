@@ -18,7 +18,7 @@ def test_feature_vector_dimension_ge_30():
         source_track="track1_dreams",
     )
     assert len(vec) >= 30
-    assert len(vec) == 32
+    assert len(vec) == 33
     assert not np.isnan(vec).any()
     assert not np.isinf(vec).any()
 
@@ -26,9 +26,9 @@ def test_feature_vector_dimension_ge_30():
 def test_reranking_sort_order():
     ranker = GBDTMetaRanker()
     cands = [
-        {"id": "cand_low", "features": np.zeros(32, dtype=np.float32)},
-        {"id": "cand_mid", "features": np.full(32, 0.5, dtype=np.float32)},
-        {"id": "cand_high", "features": np.ones(32, dtype=np.float32)},
+        {"id": "cand_low", "features": np.zeros(33, dtype=np.float32)},
+        {"id": "cand_mid", "features": np.full(33, 0.5, dtype=np.float32)},
+        {"id": "cand_high", "features": np.ones(33, dtype=np.float32)},
     ]
     scored = ranker.score_candidates(cands)
     assert len(scored) == 3
@@ -40,8 +40,8 @@ def test_reranking_sort_order():
 
 def test_one_hot_track_encodings():
     ranker = GBDTMetaRanker()
-    tracks = ["track1_dreams", "track2_db", "track3_denovo", "track_network"]
-    expected_indices = [12, 13, 14, 15]
+    tracks = ["track1_dreams", "track2_db", "track3_denovo", "track_network", "track_knapsack"]
+    expected_indices = [12, 13, 14, 15, 32]
 
     for track, exp_idx in zip(tracks, expected_indices):
         vec = ranker.extract_feature_vector(
@@ -57,7 +57,7 @@ def test_one_hot_track_encodings():
             source_track=track,
         )
         assert vec[exp_idx] == 1.0
-        # All other track indices in 12..15 should be 0.0
+        # All other track indices in expected_indices should be 0.0
         for other_idx in expected_indices:
             if other_idx != exp_idx:
                 assert vec[other_idx] == 0.0
@@ -80,13 +80,13 @@ def test_one_hot_track_encodings():
 
 
 def test_custom_weights_handling():
-    weights = np.zeros(32, dtype=np.float32)
+    weights = np.zeros(33, dtype=np.float32)
     weights[0] = 10.0  # only dreams_cosine matters
     ranker = GBDTMetaRanker(weights=weights)
 
-    cand_a = {"id": "A", "features": np.zeros(32, dtype=np.float32)}
+    cand_a = {"id": "A", "features": np.zeros(33, dtype=np.float32)}
     cand_a["features"][0] = 0.9
-    cand_b = {"id": "B", "features": np.ones(32, dtype=np.float32)}
+    cand_b = {"id": "B", "features": np.ones(33, dtype=np.float32)}
     cand_b["features"][0] = 0.1
 
     scored = ranker.score_candidates([cand_b, cand_a])
@@ -110,7 +110,7 @@ def test_score_computation_numerical_stability():
         formula_rank=0,  # Should not cause ZeroDivisionError
         source_track="",
     )
-    assert len(vec) == 32
+    assert len(vec) == 33
     assert not np.isnan(vec).any()
     assert not np.isinf(vec).any()
     # vec[11] = 1.0 / max(1, 0) == 1.0

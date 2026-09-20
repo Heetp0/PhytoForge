@@ -9,6 +9,7 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
+import pickle
 import sqlite3
 import subprocess
 import sys
@@ -76,6 +77,62 @@ def write_sample_spectra_parquet(path: Path, dim: int = 1024) -> Path:
     return path
 
 
+def write_sample_training_spectra_csv(path: Path) -> Path:
+    """Writes a sample training spectra CSV with realistic neutral losses."""
+    rows = [
+        # Aspirin: prec neutral mass = 180.0423, [M+H]+ -> prec_mz = 181.0495.
+        # Peaks: 138.0317:100.0 (acetyl loss 42.0106), 120.0211:60.0, 92.0262:30.0
+        {
+            "id": "SPEC_ASPIRIN",
+            "smiles": "CC(=O)Oc1ccccc1C(=O)O",
+            "precursor_mz": 181.0495,
+            "adduct": "[M+H]+",
+            "peaks": "138.0317:100.0;120.0211:60.0;92.0262:30.0;77.0391:15.0",
+        },
+        # Caffeine: prec neutral mass = 194.0804, [M+H]+ -> prec_mz = 195.0877.
+        # Peaks: 137.0581:100.0 (loss 57.0223), 109.0632:40.0
+        {
+            "id": "SPEC_CAFFEINE",
+            "smiles": "CN1C=NC2=C1C(=O)N(C(=O)N2C)C",
+            "precursor_mz": 195.0877,
+            "adduct": "[M+H]+",
+            "peaks": "137.0581:100.0;109.0632:40.0;82.0524:20.0",
+        },
+        # Paracetamol: prec neutral mass = 151.0633, [M+H]+ -> prec_mz = 152.0706.
+        # Peaks: 110.0475:100.0, 109.0396:50.0
+        {
+            "id": "SPEC_PARACETAMOL",
+            "smiles": "CC(=O)Nc1ccc(O)cc1",
+            "precursor_mz": 152.0706,
+            "adduct": "[M+H]+",
+            "peaks": "110.0475:100.0;109.0396:50.0;81.0447:15.0",
+        },
+        # Resveratrol: prec neutral mass = 228.0786, [M-H]- -> prec_mz = 227.0714.
+        # Peaks: 185.0597:100.0, 143.0491:30.0
+        {
+            "id": "SPEC_RESVERATROL",
+            "smiles": "Oc1ccc(/C=C/c2cc(O)cc(O)c2)cc1",
+            "precursor_mz": 227.0714,
+            "adduct": "[M-H]-",
+            "peaks": "185.0597:100.0;143.0491:30.0",
+        },
+    ]
+    df = pd.DataFrame(rows)
+    df.to_csv(path, index=False)
+    return path
+
+
+def write_sample_training_spectra_parquet(path: Path) -> Path:
+    """Writes a sample training spectra Parquet file."""
+    csv_path = path.with_suffix(".csv")
+    write_sample_training_spectra_csv(csv_path)
+    df = pd.read_csv(csv_path)
+    df.to_parquet(path, index=False)
+    if csv_path.exists():
+        csv_path.unlink()
+    return path
+
+
 # ===========================================================================
 # 1. CLI Help and Subcommand Parsing Tests
 # ===========================================================================
@@ -92,8 +149,12 @@ class TestCLIHelpAndParsers:
         assert "index-spectra" in res.stdout
         assert "validate-index" in res.stdout
         assert "benchmark" in res.stdout
+        assert "build-fragments" in res.stdout
 
-    @pytest.mark.parametrize("subcmd", ["index-db", "index-spectra", "validate-index", "benchmark"])
+    @pytest.mark.parametrize(
+        "subcmd",
+        ["index-db", "index-spectra", "validate-index", "benchmark", "build-fragments"],
+    )
     def test_cli_subcommand_help(self, subcmd: str):
         cmd = [sys.executable, "-m", "src.data.indexer", subcmd, "--help"]
         res = subprocess.run(cmd, capture_output=True, text=True, check=False)
@@ -369,3 +430,171 @@ class TestBenchmarkSubcommand:
         assert passed is True
         assert latency < 2.0
         assert latency > 0.0
+
+
+# ===========================================================================
+# 6. build-fragments Subcommand Tests (Phase 3 R4)
+# ===========================================================================
+
+class TestBuildFragmentsSubcommand:
+    """Test end-to-end execution of build-fragments subcommand (Phase 3 R4)."""
+
+    def test_build_fragments_help(self):
+        """Test build-fragments --help exits 0 and displays required arguments."""
+        cmd = [sys.executable, "-m", "src.data.indexer", "build-fragments", "--help"]
+        res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        assert res.returncode == 0
+        assert "usage: python -m src.data.indexer build-fragments" in res.stdout
+        assert "--input" in res.stdout
+        assert "--output" in res.stdout
+        assert "--smiles-col" in res.stdout
+        assert "--min-intensity" in res.stdout
+        assert "--max-mass" in res.stdout
+
+    def test_build_fragments_from_csv_e2e_success(self, tmp_path: Path):
+        """Test end-to-end library generation from CSV: exits 0, writes valid output pkl, prints summary."""
+        csv_path = write_sample_training_spectra_csv(tmp_path / "training_spectra.csv")
+        out_pkl = tmp_path / "fragments.pkl"
+
+        cmd = [
+            sys.executable,
+            "-m",
+            "src.data.indexer",
+            "build-fragments",
+            "--input",
+            str(csv_path),
+            "--output",
+            str(out_pkl),
+            "--smiles-col",
+            "smiles",
+            "--min-intensity",
+            "0.01",
+            "--max-mass",
+            "500",
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        assert res.returncode == 0, f"build-fragments failed with stderr: {res.stderr}"
+
+        # Verify summary output
+        stdout_lower = res.stdout.lower()
+        assert "total spectra processed" in stdout_lower
+        assert "unique millimass keys in library" in stdout_lower
+        assert "output path" in stdout_lower
+        assert str(out_pkl).lower() in stdout_lower
+
+        # Verify output pkl exists and has valid contents
+        assert out_pkl.exists()
+        with open(out_pkl, "rb") as f:
+            lib = pickle.load(f)
+
+        assert isinstance(lib, dict)
+        assert len(lib) > 0
+        for k, v in lib.items():
+            assert isinstance(k, (int, np.integer)) and not isinstance(k, bool), f"Key {k} is not an integer!"
+            assert isinstance(v, list)
+            assert len(v) > 0
+
+    def test_build_fragments_from_parquet_e2e_success(self, tmp_path: Path):
+        """Test end-to-end library generation from Parquet: exits 0, writes valid output pkl."""
+        pq_path = write_sample_training_spectra_parquet(tmp_path / "training_spectra.parquet")
+        out_pkl = tmp_path / "fragments_pq.pkl"
+
+        cmd = [
+            sys.executable,
+            "-m",
+            "src.data.indexer",
+            "build-fragments",
+            "--input",
+            str(pq_path),
+            "--output",
+            str(out_pkl),
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        assert res.returncode == 0, f"build-fragments failed with stderr: {res.stderr}"
+        assert out_pkl.exists()
+
+        with open(out_pkl, "rb") as f:
+            lib = pickle.load(f)
+        assert isinstance(lib, dict)
+        assert len(lib) > 0
+
+    def test_build_fragments_missing_input_file_fails(self, tmp_path: Path):
+        """Test error handling with non-existent input file (exits 1)."""
+        nonexistent = tmp_path / "nonexistent_spectra.csv"
+        out_pkl = tmp_path / "out.pkl"
+
+        cmd = [
+            sys.executable,
+            "-m",
+            "src.data.indexer",
+            "build-fragments",
+            "--input",
+            str(nonexistent),
+            "--output",
+            str(out_pkl),
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        assert res.returncode == 1
+        assert "does not exist" in res.stderr.lower()
+
+    def test_build_fragments_invalid_intensity_fails(self, tmp_path: Path):
+        """Test error handling with invalid min-intensity parameter (exits 1)."""
+        csv_path = write_sample_training_spectra_csv(tmp_path / "training_spectra.csv")
+        out_pkl = tmp_path / "out.pkl"
+
+        cmd = [
+            sys.executable,
+            "-m",
+            "src.data.indexer",
+            "build-fragments",
+            "--input",
+            str(csv_path),
+            "--output",
+            str(out_pkl),
+            "--min-intensity",
+            "-0.5",
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        assert res.returncode == 1
+        assert "min-intensity must be between 0.0 and 1.0" in res.stderr
+
+    def test_build_fragments_invalid_max_mass_fails(self, tmp_path: Path):
+        """Test error handling with invalid max-mass parameter (exits 1)."""
+        csv_path = write_sample_training_spectra_csv(tmp_path / "training_spectra.csv")
+        out_pkl = tmp_path / "out.pkl"
+
+        cmd = [
+            sys.executable,
+            "-m",
+            "src.data.indexer",
+            "build-fragments",
+            "--input",
+            str(csv_path),
+            "--output",
+            str(out_pkl),
+            "--max-mass",
+            "-100",
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        assert res.returncode == 1
+        assert "max-mass must be positive" in res.stderr
+
+    def test_build_fragments_unsupported_format_fails(self, tmp_path: Path):
+        """Test error handling with unsupported input file extension (exits 1)."""
+        invalid_file = tmp_path / "spectra.xyz"
+        invalid_file.write_text("dummy content", encoding="utf-8")
+        out_pkl = tmp_path / "out.pkl"
+
+        cmd = [
+            sys.executable,
+            "-m",
+            "src.data.indexer",
+            "build-fragments",
+            "--input",
+            str(invalid_file),
+            "--output",
+            str(out_pkl),
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        assert res.returncode == 1
+        assert "unsupported input file format" in res.stderr.lower()

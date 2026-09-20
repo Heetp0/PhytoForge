@@ -16,7 +16,7 @@ from src.pipeline import CASMIOmegaPipeline
 
 def test_meta_ranker_output_keys():
     ranker = GBDTMetaRanker()
-    cands = [{"features": np.zeros(32, dtype=np.float32)}]
+    cands = [{"features": np.zeros(33, dtype=np.float32)}]
     scored = ranker.score_candidates(cands)
     assert "score" in scored[0]
     assert "meta_score" in scored[0]
@@ -125,8 +125,8 @@ def test_gbdt_meta_ranker_feature_dim():
     vec = ranker.extract_feature_vector(
         0.5, 0.5, 1.0, 0.01, 0.5, 0.5, 0.5, 1, 1, "track1_dreams"
     )
-    assert vec.shape == (32,)
-    assert ranker.weights.shape == (32,)
+    assert vec.shape == (33,)
+    assert ranker.weights.shape == (33,)
 
 def test_formula_routing_decision_dataclass():
     d = FormulaRoutingDecision(formulas=["C"], entropy=0.5, use_formula_free_fallback=False)

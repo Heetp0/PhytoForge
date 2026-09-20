@@ -1,6 +1,6 @@
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Set, Union
 import numpy as np
 import pandas as pd
 
@@ -34,6 +34,9 @@ class CASMIOmegaPipeline:
         db: Optional[Dict[str, List]] = None,
         fallback_scaffolds: Optional[List] = None,
         governor_budget_seconds: float = 32400.0,
+        db_path: Optional[Union[str, Path]] = None,
+        spectral_index_path: Optional[Union[str, Path]] = None,
+        fragment_library: Optional[Dict[int, List[str]]] = None,
     ):
         self.fallback_pool = [f"IK14FALL{i:06d}" for i in range(50)]
         self.db = db if db is not None else {
@@ -43,17 +46,48 @@ class CASMIOmegaPipeline:
         self.fallback_scaffolds = fallback_scaffolds if fallback_scaffolds is not None else [
             ("C1CCCCC1", "IK14FALL000000", np.zeros(3, dtype=np.float32))
         ]
+        self.db_path = db_path
+        self.spectral_index_path = spectral_index_path
+        self.fragment_library = fragment_library
+        self.last_aggregated_cands: List[Dict[str, Any]] = []
 
         # Initialize pipeline modules (Modules 1 through 6)
         self.fusion_engine = MultiEnergyFusionEngine(embedding_dim=1024)
         self.formula_router = MISTFormulaRouter(entropy_threshold=1.2)
-        self.dreams_retriever = CalibratedDreaMSRetriever()
-        self.db_searcher = SoftDatabaseSearcher(db=self.db, fallback_scaffolds=self.fallback_scaffolds)
+        self.dreams_retriever = (
+            CalibratedDreaMSRetriever(index=spectral_index_path)
+            if spectral_index_path is not None
+            else CalibratedDreaMSRetriever()
+        )
+        self.db_searcher = SoftDatabaseSearcher(
+            db=self.db,
+            fallback_scaffolds=self.fallback_scaffolds,
+            db_path=db_path,
+        )
         self.denovo_engine = BoundedGenerativeEngine(timeout_seconds=5.0)
         self.transductive_network = TransductiveMolecularNetwork(cosine_threshold=0.7)
         self.meta_ranker = GBDTMetaRanker()
         self.slot_optimizer = DecisionTheoreticSlotOptimizer(fallback_pool=self.fallback_pool)
         self.governor = DynamicRuntimeGovernor(total_budget_seconds=governor_budget_seconds, reserve_seconds=480.0)
+
+    def close(self) -> None:
+        """Release underlying database and spectral index resources."""
+        if hasattr(self, "db_searcher") and self.db_searcher is not None:
+            try:
+                self.db_searcher.close()
+            except Exception:
+                pass
+        if hasattr(self, "dreams_retriever") and self.dreams_retriever is not None:
+            try:
+                self.dreams_retriever.close()
+            except Exception:
+                pass
+
+    def __enter__(self) -> "CASMIOmegaPipeline":
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()
 
     def run(
         self,
@@ -150,14 +184,27 @@ class CASMIOmegaPipeline:
 
             # Module 3: Tri-Track Candidate Generation
             # Track 1: DreaMS library retrieval
-            dummy_lib = [("c1ccccc1", "IK14DREAM00001", fused_emb.copy(), "timsTOF")]
-            track1_cands, _ = self.dreams_retriever.evaluate_candidates(
-                query_emb=fused_emb, raw_candidates=dummy_lib, query_instrument="timsTOF"
-            )
+            if getattr(self.dreams_retriever, "has_index", False):
+                track1_cands, _ = self.dreams_retriever.evaluate_candidates(
+                    query_emb=fused_emb,
+                    precursor_mz=precursor_mz,
+                    polarity=polarity,
+                    query_instrument="timsTOF",
+                )
+            else:
+                dummy_lib = [("c1ccccc1", "IK14DREAM00001", fused_emb.copy(), "timsTOF")]
+                track1_cands, _ = self.dreams_retriever.evaluate_candidates(
+                    query_emb=fused_emb, raw_candidates=dummy_lib, query_instrument="timsTOF"
+                )
 
             # Track 2: Formula-constrained database search
+            db_query_fp = (
+                np.zeros(32, dtype=np.uint64)
+                if getattr(self.db_searcher, "repo", None) is not None
+                else np.ones(3, dtype=np.float32)
+            )
             track2_cands = self.db_searcher.search_formulas(
-                formulas=routing.formulas, query_fp=np.ones(3, dtype=np.float32)
+                formulas=routing.formulas, query_fp=db_query_fp
             )
 
             # Track 3: Latency-bounded de novo sampling (conditioned on remaining per-spec budget)
@@ -177,6 +224,19 @@ class CASMIOmegaPipeline:
                 known_scaffolds={"SEED": ("c1ccccc1O", "IK14SEED000001")},
             )
 
+            # Track K: Knapsack substructure assembly
+            knapsack_cands = []
+            if self.fragment_library:
+                try:
+                    from src.reranking.fragment_library import KnapsackAssembler
+                    knapsack_cands = KnapsackAssembler().assemble(
+                        target_mass_da=neutral_mass,
+                        library=self.fragment_library,
+                        timeout_s=2.0,
+                    )
+                except Exception:
+                    knapsack_cands = []
+
             # Aggregate multi-track candidates
             aggregated_cands = []
             for c in track1_cands:
@@ -187,6 +247,27 @@ class CASMIOmegaPipeline:
                 aggregated_cands.append({"inchikey14": c.inchikey14, "smiles": getattr(c, "smiles", None), "score": c.score, "source": "track3_denovo"})
             for c in network_cands:
                 aggregated_cands.append({"inchikey14": c.inchikey14, "smiles": getattr(c, "scaffold_smiles", None), "score": c.network_score, "source": "track_network"})
+
+            for c_str in knapsack_cands:
+                cand_str = str(c_str).strip()
+                if not cand_str:
+                    continue
+                if len(cand_str) == 14 and cand_str.isalnum():
+                    ik14 = cand_str
+                else:
+                    derived_ik14 = get_inchikey14(cand_str)
+                    if derived_ik14 and len(derived_ik14) == 14 and derived_ik14.isalnum():
+                        ik14 = derived_ik14
+                    else:
+                        ik14 = f"IK14KNAP{abs(hash(cand_str)) % 1000000:06d}"
+                aggregated_cands.append({
+                    "inchikey14": ik14,
+                    "smiles": cand_str,
+                    "score": 0.3,
+                    "source": "track_knapsack",
+                })
+
+            self.last_aggregated_cands = list(aggregated_cands)
 
             # Module 4: GBDT Meta-ranking feature extraction & scoring
             scored_candidates = []
@@ -225,6 +306,12 @@ class CASMIOmegaPipeline:
                         s_clean = s.strip()
                         if any(ch in s_clean for ch in (" ", "\t", "\n", "\r", ",")):
                             continue
+                        try:
+                            from rdkit import Chem
+                            if Chem.MolFromSmiles(s_clean) is None:
+                                continue
+                        except Exception:
+                            pass
                         ik14 = get_inchikey14(s_clean)
                         if ik14:
                             if ik14 in seen_ik14:
@@ -286,14 +373,20 @@ def run_casmi_omega_pipeline(
     fallback_scaffolds: Optional[List] = None,
     governor_budget_seconds: float = 32400.0,
     output_format: str = "inchikey14",
+    db_path: Optional[Union[str, Path]] = None,
+    spectral_index_path: Optional[Union[str, Path]] = None,
+    fragment_library: Optional[Dict[int, List[str]]] = None,
 ) -> pd.DataFrame:
     """Execute CASMIOmegaPipeline on test DataFrame and export validated submission CSV."""
-    pipeline = CASMIOmegaPipeline(
+    with CASMIOmegaPipeline(
         db=db,
         fallback_scaffolds=fallback_scaffolds,
         governor_budget_seconds=governor_budget_seconds,
-    )
-    return pipeline.run(test_df, output_path=output_path, output_format=output_format)
+        db_path=db_path,
+        spectral_index_path=spectral_index_path,
+        fragment_library=fragment_library,
+    ) as pipeline:
+        return pipeline.run(test_df, output_path=output_path, output_format=output_format)
 
 
 # Official Brand Aliases for PhytoForge
