@@ -22,6 +22,7 @@ node_modules/
 dist/
 build/
 .next/
+.kaggle_bundle_src/
 
 # Agent / AI planning files (per git rules)
 implementation_plan.md
@@ -33,6 +34,7 @@ ORIGINAL_REQUEST.md
 graphify-out/
 .agents/
 .superpowers/
+docs/superpowers/
 
 # OS & IDE
 .DS_Store

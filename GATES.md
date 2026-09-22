@@ -94,3 +94,24 @@ Scope: End-to-end implementation and verification of the CASMI-Omega v2 molecula
   CHECK: python -m pytest tests/ -q -W error
   EXPECT: 818 passed, 0 warnings, 0 failures
   EVIDENCE: Passed (818 passed, 0 warnings, 0 failures in 248.41s across all 37 test modules with -W error; full regression and adversarial suite clean, 0 timeouts, strict governor compliance)
+
+- [x] G19: Phase 4 Evaluation Metrics & Bemis-Murcko Scaffold Splitter (R1)
+  CHECK: python -m pytest tests/test_evaluation_metrics.py -v -W error
+  EXPECT: 36 passed, 0 warnings, 0 failures
+  EVIDENCE: Passed (36 passed in 1.11s with -W error; verified MRR@k, Top-K accuracies, and zero-leakage Bemis-Murcko scaffold cross-validation with acyclic carbon-chain fallback)
+
+- [x] G20: Phase 4 GBDT LambdaMART Ranker Training & Native Booster Engine (R2, R3)
+  CHECK: python -m pytest tests/test_ranker_training.py -v -W error
+  EXPECT: 16 passed, 0 warnings, 0 failures
+  EVIDENCE: Passed (16 passed in 4.93s with -W error; verified synthetic listwise dataset generation, LightGBM LambdaMART ranker training, native .txt model persistence, and vectorized batch prediction with zero regression on heuristic fallback)
+
+- [x] G21: Phase 4 Kaggle Bundle Generator & Cross-Validation Benchmark CLI (R4, R5)
+  CHECK: python -m pytest tests/test_kaggle_bundle.py tests/test_evaluation_benchmark.py tests/test_adversarial_phase4_bundle_benchmark.py -v -W error
+  EXPECT: 39 passed, 0 warnings, 0 failures
+  EVIDENCE: Passed (39 passed in 19.82s with -W error; verified Kaggle environment auto-detection, standalone bundle compilation to dist/kaggle_kernel.py, and end-to-end latency benchmark CLI under governor limits)
+
+- [x] G22: Phase 4 Full Repository Test Suite Verification (All 909 Tests)
+  CHECK: python -m pytest tests/ -q -W error
+  EXPECT: 909 passed, 0 warnings, 0 failures
+  EVIDENCE: Passed (909 passed, 0 warnings, 0 failures in 290.44s across all 42 test modules with -W error; full regression and adversarial suite clean, 0 timeouts, strict governor compliance)
+

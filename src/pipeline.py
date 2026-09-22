@@ -50,6 +50,7 @@ class CASMIOmegaPipeline:
         self.spectral_index_path = spectral_index_path
         self.fragment_library = fragment_library
         self.last_aggregated_cands: List[Dict[str, Any]] = []
+        self.all_aggregated_cands: Dict[str, List[Dict[str, Any]]] = {}
 
         # Initialize pipeline modules (Modules 1 through 6)
         self.fusion_engine = MultiEnergyFusionEngine(embedding_dim=1024)
@@ -119,6 +120,7 @@ class CASMIOmegaPipeline:
         else:
             expected_ids = []
 
+        self.all_aggregated_cands = {}
         if test_df.empty:
             if fmt == "inchikey14":
                 sub_df = pd.DataFrame(columns=["id", "candidates"])
@@ -268,6 +270,7 @@ class CASMIOmegaPipeline:
                 })
 
             self.last_aggregated_cands = list(aggregated_cands)
+            self.all_aggregated_cands[spec_id] = list(aggregated_cands)
 
             # Module 4: GBDT Meta-ranking feature extraction & scoring
             scored_candidates = []

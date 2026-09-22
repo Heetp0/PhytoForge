@@ -1,5 +1,6 @@
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
 import numpy as np
 
 
@@ -11,9 +12,22 @@ class CandidateFeatureVector:
 class GBDTMetaRanker:
     """Module 4: 33-Feature GBDT LambdaMART Meta-Ranker."""
 
-    def __init__(self, weights: Optional[np.ndarray] = None):
+    def __init__(
+        self,
+        weights: Optional[np.ndarray] = None,
+        booster: Optional[Any] = None,
+        model_path: Optional[Union[str, Path]] = None,
+    ):
         # Default heuristic weights if offline model not loaded
         self.weights = weights if weights is not None else np.ones(33, dtype=np.float32)
+        self.booster = booster
+        if self.booster is None and model_path is not None:
+            p = Path(model_path)
+            if not p.exists():
+                raise FileNotFoundError(f"Model file not found: {p}")
+            from src.reranking.trainer import load_booster
+
+            self.booster = load_booster(p)
 
     def extract_feature_vector(
         self,
@@ -95,12 +109,29 @@ class GBDTMetaRanker:
         return vec
 
     def score_candidates(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        for cand in candidates:
-            feat = cand["features"]
-            score_val = float(
-                np.dot(feat[: len(self.weights)], self.weights[: len(feat)])
-            )
-            cand["meta_score"] = score_val
-            cand["score"] = score_val
+        if not candidates:
+            return []
+
+        if self.booster is not None:
+            # High-performance vectorized batch scoring
+            X = np.asarray([cand["features"] for cand in candidates], dtype=np.float32)
+            try:
+                scores = self.booster.predict(X, num_threads=1)
+            except (TypeError, ValueError):
+                scores = self.booster.predict(X)
+
+            for cand, s in zip(candidates, scores):
+                s_val = float(s)
+                cand["meta_score"] = s_val
+                cand["score"] = s_val
+        else:
+            for cand in candidates:
+                feat = cand["features"]
+                score_val = float(
+                    np.dot(feat[: len(self.weights)], self.weights[: len(feat)])
+                )
+                cand["meta_score"] = score_val
+                cand["score"] = score_val
+
         candidates.sort(key=lambda x: x["meta_score"], reverse=True)
         return candidates
