@@ -471,6 +471,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=500.0,
         help="Maximum neutral loss mass in Daltons (default: 500.0)",
     )
+    p_bf.add_argument(
+        "--max-spectra",
+        type=int,
+        default=None,
+        help="Maximum number of spectra to process (default: None for all)",
+    )
 
     return parser
 
@@ -503,12 +509,25 @@ def main(args: Optional[List[str]] = None) -> None:
                 # Determine input file type
                 ext = inp_path.suffix.lower()
                 if ext in (".parquet", ".pq"):
-                    df = pd.read_parquet(inp_path)
-                    smi_col = parsed_args.smiles_col if parsed_args.smiles_col in df.columns else "smiles"
-                    id_col = parsed_args.id_col if parsed_args.id_col in df.columns else None
+                    import pyarrow.parquet as pq
+
+                    pf = pq.ParquetFile(inp_path)
+                    smi_col = parsed_args.smiles_col
+                    if smi_col not in pf.schema.names:
+                        for cand in ["normalized_smiles", "smiles", "canonical_smiles"]:
+                            if cand in pf.schema.names:
+                                smi_col = cand
+                                break
+                    id_col = parsed_args.id_col if parsed_args.id_col in pf.schema.names else None
+                    cols_to_read = [smi_col]
+                    if id_col:
+                        cols_to_read.append(id_col)
+                    table = pq.read_table(inp_path, columns=cols_to_read)
+                    df = table.to_pandas()
                     records = [
-                        {"smiles": row[smi_col], "id": row[id_col] if id_col else None}
-                        for _, row in df.iterrows()
+                        {"smiles": s, "id": i}
+                        for s, i in zip(df[smi_col], df[id_col] if id_col else [None] * len(df))
+                        if pd.notna(s)
                     ]
                     res = indexer.index_molecules(records, batch_size=parsed_args.batch_size)
                 elif ext in (".csv", ".tsv"):
@@ -614,6 +633,7 @@ def main(args: Optional[List[str]] = None) -> None:
                 min_intensity=parsed_args.min_intensity,
                 max_mass=parsed_args.max_mass,
                 smiles_col=parsed_args.smiles_col,
+                max_spectra=parsed_args.max_spectra,
             )
             library.save(out_path)
 

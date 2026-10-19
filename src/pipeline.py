@@ -9,7 +9,7 @@ from src.chemistry.adducts import (
     get_adduct_info,
     get_multihypothesis_precursor_candidates,
 )
-from src.data.multi_energy_fusion import MultiEnergyFusionEngine, SpectralFrame
+from src.data.multi_energy_fusion import MultiEnergyFusionEngine, SpectralFrame, fuse_peaks
 from src.retrieval.mist_formula_router import MISTFormulaRouter
 from src.retrieval.dreams_retrieval import CalibratedDreaMSRetriever
 from src.retrieval.database_search import SoftDatabaseSearcher
@@ -37,6 +37,7 @@ class CASMIOmegaPipeline:
         db_path: Optional[Union[str, Path]] = None,
         spectral_index_path: Optional[Union[str, Path]] = None,
         fragment_library: Optional[Dict[int, List[str]]] = None,
+        meta_ranker_path: Optional[Union[str, Path]] = None,
     ):
         self.fallback_pool = [f"IK14FALL{i:06d}" for i in range(50)]
         self.db = db if db is not None else {
@@ -49,6 +50,7 @@ class CASMIOmegaPipeline:
         self.db_path = db_path
         self.spectral_index_path = spectral_index_path
         self.fragment_library = fragment_library
+        self.meta_ranker_path = meta_ranker_path
         self.last_aggregated_cands: List[Dict[str, Any]] = []
         self.all_aggregated_cands: Dict[str, List[Dict[str, Any]]] = {}
 
@@ -67,7 +69,11 @@ class CASMIOmegaPipeline:
         )
         self.denovo_engine = BoundedGenerativeEngine(timeout_seconds=5.0)
         self.transductive_network = TransductiveMolecularNetwork(cosine_threshold=0.7)
-        self.meta_ranker = GBDTMetaRanker()
+        self.meta_ranker = (
+            GBDTMetaRanker(model_path=meta_ranker_path)
+            if meta_ranker_path is not None
+            else GBDTMetaRanker()
+        )
         self.slot_optimizer = DecisionTheoreticSlotOptimizer(fallback_pool=self.fallback_pool)
         self.governor = DynamicRuntimeGovernor(total_budget_seconds=governor_budget_seconds, reserve_seconds=480.0)
 
@@ -111,14 +117,23 @@ class CASMIOmegaPipeline:
         if not test_df.empty:
             id_col = "id" if "id" in test_df.columns else ("molecule_id" if "molecule_id" in test_df.columns else None)
             if id_col is not None and test_df[id_col].notna().all():
-                expected_ids = [str(x) for x in test_df[id_col]]
+                raw_ids = [str(x) for x in test_df[id_col]]
             else:
-                expected_ids = [
+                raw_ids = [
                     str(test_df.iloc[i][id_col]) if id_col is not None and pd.notna(test_df.iloc[i][id_col]) else f"SPEC_{i:04d}"
                     for i in range(len(test_df))
                 ]
+            unique_ids = list(dict.fromkeys(raw_ids))
+            if len(unique_ids) < len(raw_ids):
+                id_series = test_df[id_col] if id_col is not None else pd.Series(raw_ids)
+                item_groups = [(str(m_id), grp) for m_id, grp in test_df.groupby(id_series, sort=False)]
+                expected_ids = unique_ids
+            else:
+                item_groups = [(raw_ids[i], test_df.iloc[[i]]) for i in range(len(test_df))]
+                expected_ids = raw_ids
         else:
             expected_ids = []
+            item_groups = []
 
         self.all_aggregated_cands = {}
         if test_df.empty:
@@ -135,24 +150,24 @@ class CASMIOmegaPipeline:
             )
             return sub_df
 
-        total_spectra = len(test_df)
+        total_items = len(item_groups)
         rows = []
         start_pipeline_time = time.perf_counter()
 
-        for row_idx, (_, row) in enumerate(test_df.iterrows()):
-            spec_id = expected_ids[row_idx]
+        for group_idx, (spec_id, group_df) in enumerate(item_groups):
+            first_row = group_df.iloc[0]
 
             try:
-                raw_mz = row.get("precursor_mz", 300.0)
+                raw_mz = first_row.get("precursor_mz", 300.0)
                 precursor_mz = float(raw_mz)
                 if np.isnan(precursor_mz) or np.isinf(precursor_mz) or precursor_mz <= 0.0:
                     precursor_mz = 300.0
             except (ValueError, TypeError):
                 precursor_mz = 300.0
 
-            polarity = str(row.get("polarity", "positive")).strip().lower()
+            polarity = str(first_row.get("polarity", first_row.get("ionization_mode", "positive"))).strip().lower()
             default_adduct = "[M-H]-" if polarity in ("negative", "-", "neg") else "[M+H]+"
-            raw_adduct = row.get("adduct", default_adduct)
+            raw_adduct = first_row.get("adduct", default_adduct)
             if pd.isna(raw_adduct) or not str(raw_adduct).strip():
                 adduct = default_adduct
             else:
@@ -162,23 +177,46 @@ class CASMIOmegaPipeline:
                     adduct = adduct_str
                 except Exception:
                     adduct = default_adduct
-            spectra_remaining = total_spectra - len(rows)
+            items_remaining = total_items - len(rows)
             elapsed = time.perf_counter() - start_pipeline_time
 
             # Module 6 Dynamic Runtime Governor check
-            per_spec_budget = self.governor.get_per_spectrum_budget(elapsed, spectra_remaining)
+            per_spec_budget = self.governor.get_per_spectrum_budget(elapsed, items_remaining)
 
             # Module 1: Preprocessing & Physical plausibility
             neutral_mass = calculate_canonical_neutral_mass(precursor_mz, adduct)
             hypotheses = get_multihypothesis_precursor_candidates(precursor_mz, adduct, mw_estimate=neutral_mass)
 
             # Module 1b: Spectral embedding fusion across frames
-            frame = SpectralFrame(
-                collision_energy=35.0,
-                peaks=np.array([[100.0, 50.0], [150.0, 80.0]]),
-                embedding=np.ones(1024, dtype=np.float32) / np.sqrt(1024),
-            )
-            fused_emb = self.fusion_engine.fuse_embeddings([frame])
+            frames = []
+            for _, r in group_df.iterrows():
+                peaks = None
+                if "ms2_mzs" in r and "ms2_normalized_intensities" in r:
+                    mzs = r["ms2_mzs"]
+                    ints = r["ms2_normalized_intensities"]
+                    if mzs is not None and ints is not None and len(mzs) > 0:
+                        try:
+                            m_arr = np.asarray(mzs, dtype=np.float64)
+                            i_arr = np.asarray(ints, dtype=np.float64)
+                            peaks = np.column_stack([m_arr, i_arr])
+                        except Exception:
+                            peaks = None
+                if peaks is None and "peaks" in r:
+                    from src.reranking.fragment_library import parse_peaks_field
+                    p_list = parse_peaks_field(r["peaks"], row=r)
+                    if p_list:
+                        peaks = np.array(p_list, dtype=np.float64)
+
+                ce_raw = r.get("collision_energy_ev", r.get("collision_energy", 35.0))
+                ce = float(ce_raw[0]) if isinstance(ce_raw, (list, np.ndarray)) and len(ce_raw) > 0 else (float(ce_raw) if ce_raw is not None and not pd.isna(ce_raw) else 35.0)
+                frames.append(SpectralFrame(
+                    collision_energy=ce,
+                    peaks=peaks if peaks is not None else np.zeros((0, 2), dtype=np.float64),
+                    embedding=np.ones(1024, dtype=np.float32) / np.sqrt(1024),
+                ))
+
+            fused_emb = self.fusion_engine.fuse_embeddings(frames) if frames else np.ones(1024, dtype=np.float32) / np.sqrt(1024)
+            fused_peaks = fuse_peaks(frames) if frames else np.zeros((0, 2), dtype=np.float64)
 
             # Module 2: MIST-CF soft formula routing
             formula_priors = [("C15H10O5", 0.7), ("C15H10O6", 0.2), ("C14H8O5", 0.1)]
@@ -219,7 +257,7 @@ class CASMIOmegaPipeline:
 
             # Transductive networking propagation
             self.transductive_network.add_spectrum(
-                spec_id=spec_id, neutral_mass=neutral_mass, embedding=fused_emb, peaks=frame.peaks
+                spec_id=spec_id, neutral_mass=neutral_mass, embedding=fused_emb, peaks=fused_peaks
             )
             network_cands = self.transductive_network.propagate_scaffold(
                 target_id=spec_id,
@@ -379,6 +417,7 @@ def run_casmi_omega_pipeline(
     db_path: Optional[Union[str, Path]] = None,
     spectral_index_path: Optional[Union[str, Path]] = None,
     fragment_library: Optional[Dict[int, List[str]]] = None,
+    meta_ranker_path: Optional[Union[str, Path]] = None,
 ) -> pd.DataFrame:
     """Execute CASMIOmegaPipeline on test DataFrame and export validated submission CSV."""
     with CASMIOmegaPipeline(
@@ -388,6 +427,7 @@ def run_casmi_omega_pipeline(
         db_path=db_path,
         spectral_index_path=spectral_index_path,
         fragment_library=fragment_library,
+        meta_ranker_path=meta_ranker_path,
     ) as pipeline:
         return pipeline.run(test_df, output_path=output_path, output_format=output_format)
 

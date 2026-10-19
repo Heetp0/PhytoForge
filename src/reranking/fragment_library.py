@@ -52,14 +52,18 @@ def parse_peaks_field(
             mzs = None
             ints = None
             if isinstance(row, dict):
-                mzs = row.get("mz_array") or row.get("mzs")
-                ints = row.get("intensity_array") or row.get("intensities")
+                mzs = row.get("ms2_mzs") or row.get("mz_array") or row.get("mzs")
+                ints = row.get("ms2_normalized_intensities") or row.get("intensity_array") or row.get("intensities")
             elif isinstance(row, pd.Series):
-                if "mz_array" in row:
+                if "ms2_mzs" in row:
+                    mzs = row["ms2_mzs"]
+                elif "mz_array" in row:
                     mzs = row["mz_array"]
                 elif "mzs" in row:
                     mzs = row["mzs"]
-                if "intensity_array" in row:
+                if "ms2_normalized_intensities" in row:
+                    ints = row["ms2_normalized_intensities"]
+                elif "intensity_array" in row:
                     ints = row["intensity_array"]
                 elif "intensities" in row:
                     ints = row["intensities"]
@@ -272,7 +276,7 @@ class NeutralLossLibrary:
                 break
 
         peaks_col = None
-        for cand in ["peaks", "ms2_peaks", "peak_list", "peaks_array"]:
+        for cand in ["peaks", "ms2_peaks", "peak_list", "peaks_array", "ms2_mzs"]:
             if cand in cols:
                 peaks_col = cols[cand]
                 break
@@ -281,7 +285,7 @@ class NeutralLossLibrary:
         if smiles_col in df.columns:
             actual_smiles_col = smiles_col
         else:
-            for cand in ["smiles", "canonical_smiles", "structure"]:
+            for cand in ["normalized_smiles", "smiles", "canonical_smiles", "structure"]:
                 if cand in cols:
                     actual_smiles_col = cols[cand]
                     break
@@ -360,27 +364,77 @@ class NeutralLossLibrary:
         min_intensity: Optional[float] = None,
         max_mass: Optional[float] = None,
         smiles_col: str = "smiles",
+        max_spectra: Optional[int] = None,
     ) -> Dict[str, int]:
-        """Loads a CSV or Parquet file and builds the library."""
+        """Loads a CSV or Parquet file and builds the library with memory-safe chunking."""
         path = Path(file_path)
         if not path.exists():
             raise FileNotFoundError(f"Input file not found: {path}")
 
         suffix = path.suffix.lower()
         if suffix in [".parquet", ".pq"]:
-            df = pd.read_parquet(path)
+            try:
+                import pyarrow.parquet as pq
+
+                pf = pq.ParquetFile(path)
+                schema_names = pf.schema_arrow.names if hasattr(pf, "schema_arrow") else pf.schema.names
+                target_cols = [c for c in ["precursor_mz", "adduct"] if c in schema_names]
+                for c in ["ms2_mzs", "peaks", "ms2_peaks", "peak_list"]:
+                    if c in schema_names and c not in target_cols:
+                        target_cols.append(c)
+                        break
+                for c in ["ms2_normalized_intensities", "intensities", "intensity_array"]:
+                    if c in schema_names and c not in target_cols:
+                        target_cols.append(c)
+                        break
+                for c in [smiles_col, "normalized_smiles", "smiles", "molecule_id"]:
+                    if c in schema_names and c not in target_cols:
+                        target_cols.append(c)
+
+                total_spectra = 0
+                total_fragments = 0
+                for rg_idx in range(pf.metadata.num_row_groups):
+                    batch_df = pf.read_row_group(rg_idx, columns=target_cols).to_pandas()
+                    if max_spectra is not None and (total_spectra + len(batch_df)) > max_spectra:
+                        batch_df = batch_df.iloc[: max(0, max_spectra - total_spectra)]
+
+                    stats = self.build_from_dataframe(
+                        batch_df,
+                        min_intensity=min_intensity,
+                        max_mass=max_mass,
+                        smiles_col=smiles_col,
+                    )
+                    total_spectra += stats["total_spectra"]
+                    total_fragments += stats["total_fragments"]
+                    if max_spectra is not None and total_spectra >= max_spectra:
+                        break
+
+                return {
+                    "total_spectra": total_spectra,
+                    "unique_keys": len(self.library),
+                    "total_fragments": total_fragments,
+                }
+            except Exception:
+                df = pd.read_parquet(path)
+                if max_spectra is not None:
+                    df = df.iloc[:max_spectra]
+                return self.build_from_dataframe(
+                    df,
+                    min_intensity=min_intensity,
+                    max_mass=max_mass,
+                    smiles_col=smiles_col,
+                )
         elif suffix in [".csv", ".tsv", ".txt"]:
             sep = "\t" if suffix == ".tsv" else ","
-            df = pd.read_csv(path, sep=sep)
+            df = pd.read_csv(path, sep=sep, nrows=max_spectra)
+            return self.build_from_dataframe(
+                df,
+                min_intensity=min_intensity,
+                max_mass=max_mass,
+                smiles_col=smiles_col,
+            )
         else:
             raise ValueError(f"Unsupported file format: {suffix}. Must be .parquet or .csv")
-
-        return self.build_from_dataframe(
-            df,
-            min_intensity=min_intensity,
-            max_mass=max_mass,
-            smiles_col=smiles_col,
-        )
 
     def save(self, path: Union[str, Path]) -> None:
         """Serializes the library to disk in JSON or Pickle format."""

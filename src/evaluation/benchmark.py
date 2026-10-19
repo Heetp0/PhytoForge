@@ -332,6 +332,7 @@ def main() -> None:
         "db_path": args.db_path,
         "spectral_index_path": args.spectral_index_path,
         "fragment_library": frag_lib,
+        "meta_ranker_path": args.meta_ranker_path,
         "governor_budget_seconds": args.governor_budget,
     }
 

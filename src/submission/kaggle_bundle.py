@@ -262,12 +262,10 @@ def _bootstrap_source(target_dir: Path | None = None) -> Path:
     if target_dir is None:
         target_dir = Path.cwd() / ".kaggle_bundle_src"
     target_dir = Path(target_dir)
-    target_src = target_dir / "src"
-    if not (target_src / "pipeline.py").exists():
-        target_dir.mkdir(parents=True, exist_ok=True)
-        raw_bytes = base64.b64decode(EMBEDDED_SOURCE_B64.strip())
-        with zipfile.ZipFile(io.BytesIO(raw_bytes)) as zf:
-            zf.extractall(target_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    raw_bytes = base64.b64decode(EMBEDDED_SOURCE_B64.strip())
+    with zipfile.ZipFile(io.BytesIO(raw_bytes)) as zf:
+        zf.extractall(target_dir)
     target_str = str(target_dir.resolve())
     if target_str not in sys.path:
         sys.path.insert(0, target_str)
@@ -287,7 +285,7 @@ from src.submission.writer import validate_submission_file
 def run_kaggle_pipeline(
     input_path: str | Path | None = None,
     output_path: str | Path | None = None,
-    output_format: str = "inchikey14",
+    output_format: str | None = None,
     db_path: str | Path | None = None,
     spectral_index_path: str | Path | None = None,
     fragment_library_path: str | Path | None = None,
@@ -325,12 +323,39 @@ def run_kaggle_pipeline(
         except UnicodeDecodeError:
             test_df = pd.read_csv(resolved_test, encoding="latin-1")
 
+    # Format auto-detection if not specified
+    if output_format is None:
+        sample_sub = None
+        for root in config._get_search_roots():
+            for name in ("sample_submission.csv", "sample_sub.csv"):
+                cand = root / name
+                if cand.is_file():
+                    sample_sub = cand
+                    break
+            if sample_sub:
+                break
+        if sample_sub is not None:
+            try:
+                first_line = sample_sub.read_text(encoding="utf-8").splitlines()[0].lower()
+                if "smiles" in first_line or "molecule_id" in first_line:
+                    output_format = "smiles"
+                elif "candidates" in first_line or "inchikey" in first_line:
+                    output_format = "inchikey14"
+            except Exception:
+                pass
+        if output_format is None:
+            if "molecule_id" in test_df.columns and "id" not in test_df.columns:
+                output_format = "smiles"
+            else:
+                output_format = "inchikey14"
+
     total_specs = len(test_df)
     total_budget = governor_limit_per_spec * total_specs if total_specs > 0 else 32400.0
 
     resolved_db = config.resolve_candidate_db()
     resolved_index = config.resolve_spectral_index()
     resolved_frag = config.resolve_fragment_library()
+    resolved_ranker = config.resolve_meta_ranker_model()
 
     frag_lib = None
     if resolved_frag is not None:
@@ -350,6 +375,7 @@ def run_kaggle_pipeline(
         db_path=resolved_db,
         spectral_index_path=resolved_index,
         fragment_library=frag_lib,
+        meta_ranker_path=resolved_ranker,
         governor_budget_seconds=total_budget,
     ) as pipeline:
         pipeline.run(
@@ -372,9 +398,9 @@ def main() -> None:
     parser.add_argument(
         "--format",
         type=str,
-        default="inchikey14",
+        default=None,
         choices=["inchikey14", "smiles"],
-        help="Submission output format",
+        help="Submission output format (default: auto-detected)",
     )
     parser.add_argument("--db-path", type=str, default=None, help="Path to candidate SQLite database")
     parser.add_argument("--spectral-index-path", type=str, default=None, help="Path to spectral index")

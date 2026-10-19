@@ -10,11 +10,14 @@ env/
 # Data & Models (Do not commit large datasets / weights)
 data/*.parquet
 data/*.csv
+data/*.db*
 !data/sample_submission.csv
 models/*.pt
 models/*.onnx
 models/*.bin
 models/*.safetensors
+models/*.pkl
+models/*.txt
 
 # Builds & Environments
 node_modules/
