@@ -18,6 +18,7 @@ models/*.bin
 models/*.safetensors
 models/*.pkl
 models/*.txt
+benchmark_report*.json
 
 # Builds & Environments
 node_modules/

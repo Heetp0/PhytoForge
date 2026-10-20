@@ -14,7 +14,10 @@ from src.retrieval.mist_formula_router import MISTFormulaRouter
 from src.retrieval.dreams_retrieval import CalibratedDreaMSRetriever
 from src.retrieval.database_search import SoftDatabaseSearcher
 from src.retrieval.generative_denovo import BoundedGenerativeEngine
-from src.retrieval.transductive_networking import TransductiveMolecularNetwork
+from src.retrieval.transductive_networking import (
+    BOTANICAL_AGLYCONE_LIBRARY,
+    TransductiveMolecularNetwork,
+)
 from src.reranking.meta_ranker import GBDTMetaRanker
 from src.reranking.slot_optimizer import DecisionTheoreticSlotOptimizer
 from src.submission.writer import (
@@ -33,7 +36,7 @@ def _compute_candidate_fragment_match_ratio(
     max_bonds: int = 25,
     top_k_peaks: int = 30,
 ) -> float:
-    """Compute candidate-specific in silico bond cleavage match ratio against observed peaks."""
+    """Compute candidate-specific in silico bond cleavage and RDA ring-cleavage match ratio against observed peaks."""
     if mol is None or fused_peaks is None or len(fused_peaks) == 0:
         return 0.0
 
@@ -41,14 +44,25 @@ def _compute_candidate_fragment_match_ratio(
         try:
             top_idx = np.argsort(fused_peaks[:, 1])[::-1][:top_k_peaks]
             peak_mzs = fused_peaks[top_idx, 0]
+            peak_ints = fused_peaks[top_idx, 1]
         except Exception:
             peak_mzs = (
                 fused_peaks[:top_k_peaks, 0]
                 if fused_peaks.ndim == 2
                 else fused_peaks[:top_k_peaks]
             )
+            peak_ints = (
+                fused_peaks[:top_k_peaks, 1]
+                if fused_peaks.ndim == 2
+                else np.ones(len(peak_mzs))
+            )
     else:
         peak_mzs = fused_peaks[:, 0] if fused_peaks.ndim == 2 else fused_peaks
+        peak_ints = (
+            fused_peaks[:, 1]
+            if fused_peaks.ndim == 2
+            else np.ones(len(peak_mzs))
+        )
 
     if len(peak_mzs) == 0:
         return 0.0
@@ -80,6 +94,7 @@ def _compute_candidate_fragment_match_ratio(
                 ]
             )
 
+        # 1. Acyclic single bond cleavages
         bonds = [
             b
             for b in mol.GetBonds()
@@ -97,17 +112,62 @@ def _compute_candidate_fragment_match_ratio(
                         frag_masses.extend([mw, mw + 1.007825, mw - 1.007825])
             except Exception:
                 continue
+
+        # 2. Retro-Diels-Alder (RDA) 2-bond ring cleavage for oxygen-heterocyclic pyrones/chromones
+        try:
+            kek_mol = Chem.Mol(mol)
+            Chem.Kekulize(kek_mol, clearAromaticFlags=True)
+            for ring in kek_mol.GetRingInfo().AtomRings():
+                if len(ring) != 6:
+                    continue
+                ring_atoms = [kek_mol.GetAtomWithIdx(idx) for idx in ring]
+                if any(a.GetSymbol() == "O" for a in ring_atoms):
+                    ring_bonds = []
+                    for i in range(len(ring)):
+                        b = kek_mol.GetBondBetweenAtoms(ring[i], ring[(i + 1) % len(ring)])
+                        if b is not None:
+                            ring_bonds.append(b.GetIdx())
+                    for i in range(len(ring_bonds)):
+                        for j in range(i + 1, len(ring_bonds)):
+                            try:
+                                rda_frags = Chem.FragmentOnBonds(
+                                    kek_mol,
+                                    [ring_bonds[i], ring_bonds[j]],
+                                    dummyLabels=[(0, 0), (0, 0)],
+                                )
+                                mol_frags = Chem.GetMolFrags(
+                                    rda_frags, asMols=True, sanitizeFrags=False
+                                )
+                                if len(mol_frags) == 2:
+                                    for f in mol_frags:
+                                        fm = float(ExactMolWt(f))
+                                        if 40.0 <= fm <= neutral_mass:
+                                            frag_masses.extend(
+                                                [fm, fm + 1.007825, fm - 1.007825]
+                                            )
+                            except Exception:
+                                pass
+        except Exception:
+            pass
     except Exception:
         pass
 
     frag_arr = np.array(frag_masses, dtype=np.float64)
     matched = 0
-    for pmz in peak_mzs:
+    matched_int = 0.0
+    total_int = 0.0
+
+    for pmz, pint in zip(peak_mzs, peak_ints):
+        pw = float(pint) if pint > 0 else 1.0
+        total_int += pw
         tol = max(0.02, pmz * 25e-6)
         if np.any(np.abs(frag_arr - pmz) <= tol):
             matched += 1
+            matched_int += pw
 
-    return float(matched) / max(1, len(peak_mzs))
+    count_ratio = float(matched) / max(1, len(peak_mzs))
+    intensity_ratio = float(matched_int) / (total_int + 1e-6)
+    return float(0.40 * count_ratio + 0.60 * intensity_ratio)
 
 
 class CASMIOmegaPipeline:
@@ -154,6 +214,9 @@ class CASMIOmegaPipeline:
         )
         self.denovo_engine = BoundedGenerativeEngine(timeout_seconds=5.0)
         self.transductive_network = TransductiveMolecularNetwork(cosine_threshold=0.7)
+        self.transductive_network.load_botanical_aglycones()
+        for k, v in BOTANICAL_AGLYCONE_LIBRARY.items():
+            self.solved_scaffolds[k] = (v["smiles"], v["inchikey14"])
         if self.db_path is None:
             self.transductive_network.add_spectrum(
                 "SEED",
@@ -173,57 +236,90 @@ class CASMIOmegaPipeline:
     def _format_row(
         self, spec_id: str, ranked: List[Dict[str, Any]], fmt: str
     ) -> Dict[str, str]:
-        """Format 25 ranked candidate slots as InChIKey14 or SMILES row."""
+        """Format 25 ranked candidate slots as InChIKey14 or SMILES row using MMR portfolio optimization."""
+        slots = self.slot_optimizer.allocate_25_slots(ranked, diversity_lambda=0.88)
         if fmt == "inchikey14":
-            slots = self.slot_optimizer.allocate_25_slots(ranked)
             return {"id": spec_id, "candidates": ";".join(slots)}
         else:
             selected_smiles: List[str] = []
+            seen_smiles: Set[str] = set()
             seen_ik14: Set[str] = set()
+
+            ik_to_smi: Dict[str, str] = {}
             for cand in ranked:
                 s = cand.get("smiles")
-                if s and isinstance(s, str) and s.strip():
-                    s_clean = s.strip()
-                    if any(ch in s_clean for ch in (" ", "\t", "\n", "\r", ",")):
-                        continue
-                    try:
-                        from rdkit import Chem
-                        if Chem.MolFromSmiles(s_clean) is None:
+                ik = cand.get("inchikey14")
+                if s and ik and ik not in ik_to_smi:
+                    ik_to_smi[ik] = s
+
+            # Match SMILES from MMR slots
+            for ik in slots:
+                if ik in ik_to_smi:
+                    s_clean = ik_to_smi[ik].strip()
+                    if not any(ch in s_clean for ch in (" ", "\t", "\n", "\r", ",")):
+                        try:
+                            from rdkit import Chem
+                            if Chem.MolFromSmiles(s_clean) is not None and s_clean not in seen_smiles:
+                                selected_smiles.append(s_clean)
+                                seen_smiles.add(s_clean)
+                                seen_ik14.add(ik)
+                        except Exception:
+                            pass
+                if len(selected_smiles) == 25:
+                    break
+
+            # If any ranked candidate with smiles was not covered by slots, append it
+            if len(selected_smiles) < 25:
+                for cand in ranked:
+                    s = cand.get("smiles")
+                    if s and isinstance(s, str) and s.strip():
+                        s_clean = s.strip()
+                        if any(ch in s_clean for ch in (" ", "\t", "\n", "\r", ",")):
                             continue
-                    except Exception:
-                        pass
-                    ik14 = get_inchikey14(s_clean)
-                    if ik14:
-                        if ik14 in seen_ik14:
+                        if s_clean in seen_smiles:
                             continue
-                        seen_ik14.add(ik14)
-                    elif s_clean in selected_smiles:
-                        continue
-                    selected_smiles.append(s_clean)
-                    if len(selected_smiles) == 25:
-                        break
+                        try:
+                            from rdkit import Chem
+                            if Chem.MolFromSmiles(s_clean) is None:
+                                continue
+                        except Exception:
+                            pass
+                        cand_ik = cand.get("inchikey14") or get_inchikey14(s_clean)
+                        if cand_ik and cand_ik in seen_ik14:
+                            continue
+                        if cand_ik:
+                            seen_ik14.add(cand_ik)
+                        selected_smiles.append(s_clean)
+                        seen_smiles.add(s_clean)
+                        if len(selected_smiles) == 25:
+                            break
+
             if len(selected_smiles) < 25:
                 for fb in DEFAULT_FALLBACK_SMILES:
                     fb_clean = fb.strip()
+                    if fb_clean in seen_smiles:
+                        continue
                     fb_ik = get_inchikey14(fb_clean)
                     if fb_ik and fb_ik in seen_ik14:
-                        continue
-                    if fb_clean in selected_smiles:
                         continue
                     if fb_ik:
                         seen_ik14.add(fb_ik)
                     selected_smiles.append(fb_clean)
+                    seen_smiles.add(fb_clean)
                     if len(selected_smiles) == 25:
                         break
+
             alkane_k = 1
             while len(selected_smiles) < 25:
                 cand_smi = "C" * alkane_k
                 cand_ik = get_inchikey14(cand_smi)
-                if cand_smi not in selected_smiles and (not cand_ik or cand_ik not in seen_ik14):
+                if cand_smi not in seen_smiles and (not cand_ik or cand_ik not in seen_ik14):
                     if cand_ik:
                         seen_ik14.add(cand_ik)
                     selected_smiles.append(cand_smi)
+                    seen_smiles.add(cand_smi)
                 alkane_k += 1
+
             selected_smiles = selected_smiles[:25]
             return {"molecule_id": spec_id, "smiles": ";".join(selected_smiles)}
 
@@ -433,6 +529,25 @@ class CASMIOmegaPipeline:
             track2_cands = self.db_searcher.search_formulas(
                 formulas=routing.formulas, query_fp=db_query_fp
             )
+
+            # Multi-adduct hypothesis expansion when primary formula retrieval yields sparse candidates (< 5)
+            if len(track2_cands) < 5 and len(hypotheses) > 1:
+                existing_iks = {c.inchikey14 for c in track2_cands}
+                for hyp in hypotheses[1:3]:
+                    hyp_mass = hyp[0]
+                    try:
+                        _nc = max(1, round(hyp_mass / 19.0))
+                        _nh = max(1, round(_nc * 1.4))
+                        _no = max(0, round(_nc * 0.35))
+                        _guessed = f"C{_nc}H{_nh}" + (f"O{_no}" if _no > 0 else "")
+                        sec_routing = self.formula_router.route_formula_distribution([(_guessed, 0.5)])
+                        sec_cands = self.db_searcher.search_formulas(formulas=sec_routing.formulas, query_fp=db_query_fp)
+                        for sc in sec_cands:
+                            if sc.inchikey14 not in existing_iks:
+                                track2_cands.append(sc)
+                                existing_iks.add(sc.inchikey14)
+                    except Exception:
+                        pass
 
             # Track 3: Latency-bounded de novo sampling (conditioned on remaining per-spec budget)
             track3_timeout = min(per_spec_budget, 10.0)
