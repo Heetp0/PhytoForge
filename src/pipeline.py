@@ -26,6 +26,90 @@ from src.submission.writer import (
 from src.submission.runtime_governor import DynamicRuntimeGovernor
 
 
+def _compute_candidate_fragment_match_ratio(
+    mol: Any,
+    fused_peaks: np.ndarray,
+    neutral_mass: float,
+    max_bonds: int = 25,
+    top_k_peaks: int = 30,
+) -> float:
+    """Compute candidate-specific in silico bond cleavage match ratio against observed peaks."""
+    if mol is None or fused_peaks is None or len(fused_peaks) == 0:
+        return 0.0
+
+    if len(fused_peaks) > top_k_peaks and fused_peaks.ndim == 2:
+        try:
+            top_idx = np.argsort(fused_peaks[:, 1])[::-1][:top_k_peaks]
+            peak_mzs = fused_peaks[top_idx, 0]
+        except Exception:
+            peak_mzs = (
+                fused_peaks[:top_k_peaks, 0]
+                if fused_peaks.ndim == 2
+                else fused_peaks[:top_k_peaks]
+            )
+    else:
+        peak_mzs = fused_peaks[:, 0] if fused_peaks.ndim == 2 else fused_peaks
+
+    if len(peak_mzs) == 0:
+        return 0.0
+
+    frag_masses = [neutral_mass + 1.007825, neutral_mass - 1.007825, neutral_mass]
+    try:
+        from rdkit import Chem
+        from rdkit.Chem.Descriptors import ExactMolWt
+
+        smi = Chem.MolToSmiles(mol)
+        if "O" in smi:
+            frag_masses.extend(
+                [
+                    neutral_mass + 1.007825 - 18.0106,
+                    neutral_mass - 1.007825 - 18.0106,
+                ]
+            )
+            frag_masses.extend(
+                [
+                    neutral_mass + 1.007825 - 27.9949,
+                    neutral_mass - 1.007825 - 27.9949,
+                ]
+            )
+        if "N" in smi or "n" in smi:
+            frag_masses.extend(
+                [
+                    neutral_mass + 1.007825 - 17.0265,
+                    neutral_mass - 1.007825 - 17.0265,
+                ]
+            )
+
+        bonds = [
+            b
+            for b in mol.GetBonds()
+            if not b.IsInRing() and b.GetBondType() == Chem.BondType.SINGLE
+        ]
+        if len(bonds) > max_bonds:
+            bonds = bonds[:max_bonds]
+
+        for b in bonds:
+            try:
+                frags = Chem.FragmentOnBonds(mol, [b.GetIdx()], dummyLabels=[(0, 0)])
+                for f in Chem.GetMolFrags(frags, asMols=True):
+                    mw = float(ExactMolWt(f))
+                    if 40.0 <= mw <= neutral_mass:
+                        frag_masses.extend([mw, mw + 1.007825, mw - 1.007825])
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    frag_arr = np.array(frag_masses, dtype=np.float64)
+    matched = 0
+    for pmz in peak_mzs:
+        tol = max(0.02, pmz * 25e-6)
+        if np.any(np.abs(frag_arr - pmz) <= tol):
+            matched += 1
+
+    return float(matched) / max(1, len(peak_mzs))
+
+
 class CASMIOmegaPipeline:
     """Unified CASMI-Omega v2 End-to-End Pipeline connecting Modules 1-6."""
 
@@ -53,6 +137,7 @@ class CASMIOmegaPipeline:
         self.meta_ranker_path = meta_ranker_path
         self.last_aggregated_cands: List[Dict[str, Any]] = []
         self.all_aggregated_cands: Dict[str, List[Dict[str, Any]]] = {}
+        self.solved_scaffolds: Dict[str, Tuple[str, str]] = {}
 
         # Initialize pipeline modules (Modules 1 through 6)
         self.fusion_engine = MultiEnergyFusionEngine(embedding_dim=1024)
@@ -69,6 +154,14 @@ class CASMIOmegaPipeline:
         )
         self.denovo_engine = BoundedGenerativeEngine(timeout_seconds=5.0)
         self.transductive_network = TransductiveMolecularNetwork(cosine_threshold=0.7)
+        if self.db_path is None:
+            self.transductive_network.add_spectrum(
+                "SEED",
+                neutral_mass=94.0418,
+                embedding=np.ones(1024, dtype=np.float32) / np.sqrt(1024),
+                peaks=np.array([[94.0418, 100.0], [65.0418, 50.0], [39.0418, 30.0]], dtype=np.float64),
+            )
+            self.solved_scaffolds["SEED"] = ("c1ccccc1O", "IK14SEED000001")
         self.meta_ranker = (
             GBDTMetaRanker(model_path=meta_ranker_path)
             if meta_ranker_path is not None
@@ -76,6 +169,63 @@ class CASMIOmegaPipeline:
         )
         self.slot_optimizer = DecisionTheoreticSlotOptimizer(fallback_pool=self.fallback_pool)
         self.governor = DynamicRuntimeGovernor(total_budget_seconds=governor_budget_seconds, reserve_seconds=480.0)
+
+    def _format_row(
+        self, spec_id: str, ranked: List[Dict[str, Any]], fmt: str
+    ) -> Dict[str, str]:
+        """Format 25 ranked candidate slots as InChIKey14 or SMILES row."""
+        if fmt == "inchikey14":
+            slots = self.slot_optimizer.allocate_25_slots(ranked)
+            return {"id": spec_id, "candidates": ";".join(slots)}
+        else:
+            selected_smiles: List[str] = []
+            seen_ik14: Set[str] = set()
+            for cand in ranked:
+                s = cand.get("smiles")
+                if s and isinstance(s, str) and s.strip():
+                    s_clean = s.strip()
+                    if any(ch in s_clean for ch in (" ", "\t", "\n", "\r", ",")):
+                        continue
+                    try:
+                        from rdkit import Chem
+                        if Chem.MolFromSmiles(s_clean) is None:
+                            continue
+                    except Exception:
+                        pass
+                    ik14 = get_inchikey14(s_clean)
+                    if ik14:
+                        if ik14 in seen_ik14:
+                            continue
+                        seen_ik14.add(ik14)
+                    elif s_clean in selected_smiles:
+                        continue
+                    selected_smiles.append(s_clean)
+                    if len(selected_smiles) == 25:
+                        break
+            if len(selected_smiles) < 25:
+                for fb in DEFAULT_FALLBACK_SMILES:
+                    fb_clean = fb.strip()
+                    fb_ik = get_inchikey14(fb_clean)
+                    if fb_ik and fb_ik in seen_ik14:
+                        continue
+                    if fb_clean in selected_smiles:
+                        continue
+                    if fb_ik:
+                        seen_ik14.add(fb_ik)
+                    selected_smiles.append(fb_clean)
+                    if len(selected_smiles) == 25:
+                        break
+            alkane_k = 1
+            while len(selected_smiles) < 25:
+                cand_smi = "C" * alkane_k
+                cand_ik = get_inchikey14(cand_smi)
+                if cand_smi not in selected_smiles and (not cand_ik or cand_ik not in seen_ik14):
+                    if cand_ik:
+                        seen_ik14.add(cand_ik)
+                    selected_smiles.append(cand_smi)
+                alkane_k += 1
+            selected_smiles = selected_smiles[:25]
+            return {"molecule_id": spec_id, "smiles": ";".join(selected_smiles)}
 
     def close(self) -> None:
         """Release underlying database and spectral index resources."""
@@ -153,6 +303,8 @@ class CASMIOmegaPipeline:
         total_items = len(item_groups)
         rows = []
         start_pipeline_time = time.perf_counter()
+
+        scored_candidates_by_id: Dict[str, List[Dict[str, Any]]] = {}
 
         for group_idx, (spec_id, group_df) in enumerate(item_groups):
             first_row = group_df.iloc[0]
@@ -296,7 +448,7 @@ class CASMIOmegaPipeline:
             )
             network_cands = self.transductive_network.propagate_scaffold(
                 target_id=spec_id,
-                known_scaffolds={"SEED": ("c1ccccc1O", "IK14SEED000001")},
+                known_scaffolds=self.solved_scaffolds,
             )
 
             # Track K: Knapsack substructure assembly
@@ -322,6 +474,29 @@ class CASMIOmegaPipeline:
                 aggregated_cands.append({"inchikey14": c.inchikey14, "smiles": getattr(c, "smiles", None), "score": c.score, "source": "track3_denovo"})
             for c in network_cands:
                 aggregated_cands.append({"inchikey14": c.inchikey14, "smiles": getattr(c, "scaffold_smiles", None), "score": c.network_score, "source": "track_network"})
+
+            # Cross-validate candidates against transductive network scaffolds
+            if network_cands:
+                for nc in network_cands:
+                    scaff_smi = getattr(nc, "scaffold_smiles", None)
+                    if scaff_smi:
+                        try:
+                            from rdkit import Chem
+                            scaff_m = Chem.MolFromSmiles(scaff_smi)
+                            if scaff_m is not None:
+                                for c in list(aggregated_cands):
+                                    c_smi = c.get("smiles")
+                                    if c_smi and c.get("source") != "track_network":
+                                        c_m = Chem.MolFromSmiles(c_smi)
+                                        if c_m and (c_m.HasSubstructMatch(scaff_m) or scaff_m.HasSubstructMatch(c_m)):
+                                            aggregated_cands.append({
+                                                "inchikey14": c["inchikey14"],
+                                                "smiles": c_smi,
+                                                "score": nc.network_score,
+                                                "source": "track_network",
+                                            })
+                        except Exception:
+                            pass
 
             for c_str in knapsack_cands:
                 cand_str = str(c_str).strip()
@@ -373,6 +548,7 @@ class CASMIOmegaPipeline:
                 cand_ppm = 2.0
                 cand_abs_da = 0.001
                 np_score = 1.0
+                cand_frag_ratio = shared_frag_ratio
                 smi = c.get("smiles")
                 if smi and isinstance(smi, str):
                     try:
@@ -387,6 +563,11 @@ class CASMIOmegaPipeline:
                             n_o = smi.count("O") + smi.count("o")
                             n_n = smi.count("N") + smi.count("n")
                             np_score = float((n_o * 1.5 + n_n * 1.2) / n_c)
+
+                            cand_in_silico = _compute_candidate_fragment_match_ratio(
+                                mol=m, fused_peaks=fused_peaks, neutral_mass=neutral_mass
+                            )
+                            cand_frag_ratio = min(0.95, max(shared_frag_ratio, shared_frag_ratio + cand_in_silico * 0.45))
                     except Exception:
                         pass
 
@@ -398,7 +579,7 @@ class CASMIOmegaPipeline:
                     mist_tanimoto=c["score"] if "db" in c["source"] else 0.5,
                     ppm_error=cand_ppm,
                     abs_da_error=cand_abs_da,
-                    fragment_match_ratio=shared_frag_ratio,
+                    fragment_match_ratio=cand_frag_ratio,
                     np_score=np_score,
                     entropy_similarity=0.8,
                     cross_track_agreement_count=agreed_count,
@@ -411,66 +592,76 @@ class CASMIOmegaPipeline:
                     cand_entry["smiles"] = c["smiles"]
                 scored_candidates.append(cand_entry)
 
+            scored_candidates_by_id[spec_id] = scored_candidates
             ranked = self.meta_ranker.score_candidates(scored_candidates)
 
-            if fmt == "inchikey14":
-                # Module 5: Planar InChIKey14 slot optimizer (strictly 25 unique valid keys)
-                slots = self.slot_optimizer.allocate_25_slots(ranked)
-                rows.append({"id": spec_id, "candidates": ";".join(slots)})
-            else:
-                # SMILES format: 25 unique, valid SMILES strings
-                selected_smiles: List[str] = []
-                seen_ik14: Set[str] = set()
+            # Register high-confidence top candidate in solved_scaffolds
+            if ranked:
+                top_c = ranked[0]
+                top_s = top_c.get("smiles")
+                top_ik = top_c.get("inchikey14")
+                if top_s and top_ik:
+                    self.solved_scaffolds[spec_id] = (top_s, top_ik)
 
-                for cand in ranked:
-                    s = cand.get("smiles")
-                    if s and isinstance(s, str) and s.strip():
-                        s_clean = s.strip()
-                        if any(ch in s_clean for ch in (" ", "\t", "\n", "\r", ",")):
-                            continue
-                        try:
-                            from rdkit import Chem
-                            if Chem.MolFromSmiles(s_clean) is None:
-                                continue
-                        except Exception:
-                            pass
-                        ik14 = get_inchikey14(s_clean)
-                        if ik14:
-                            if ik14 in seen_ik14:
-                                continue
-                            seen_ik14.add(ik14)
-                        elif s_clean in selected_smiles:
-                            continue
-                        selected_smiles.append(s_clean)
-                        if len(selected_smiles) == 25:
-                            break
+            rows.append(self._format_row(spec_id, ranked, fmt))
 
-                if len(selected_smiles) < 25:
-                    for fb in DEFAULT_FALLBACK_SMILES:
-                        fb_clean = fb.strip()
-                        fb_ik = get_inchikey14(fb_clean)
-                        if fb_ik and fb_ik in seen_ik14:
+        # Post-pass transductive refinement: propagate newly solved scaffolds across test batch
+        if len(item_groups) > 1 and len(self.solved_scaffolds) > 1:
+            for idx, (spec_id, _) in enumerate(item_groups):
+                net_cands = self.transductive_network.propagate_scaffold(
+                    target_id=spec_id,
+                    known_scaffolds=self.solved_scaffolds,
+                )
+                if not net_cands:
+                    continue
+                curr_cands = self.all_aggregated_cands.get(spec_id, [])
+                if not curr_cands:
+                    continue
+                boosted = False
+                for nc in net_cands:
+                    scaff_smi = getattr(nc, "scaffold_smiles", None)
+                    if not scaff_smi:
+                        continue
+                    try:
+                        from rdkit import Chem
+                        scaff_m = Chem.MolFromSmiles(scaff_smi)
+                        if scaff_m is None:
                             continue
-                        if fb_clean in selected_smiles:
-                            continue
-                        if fb_ik:
-                            seen_ik14.add(fb_ik)
-                        selected_smiles.append(fb_clean)
-                        if len(selected_smiles) == 25:
-                            break
-
-                alkane_k = 1
-                while len(selected_smiles) < 25:
-                    cand_smi = "C" * alkane_k
-                    cand_ik = get_inchikey14(cand_smi)
-                    if cand_smi not in selected_smiles and (not cand_ik or cand_ik not in seen_ik14):
-                        if cand_ik:
-                            seen_ik14.add(cand_ik)
-                        selected_smiles.append(cand_smi)
-                    alkane_k += 1
-
-                selected_smiles = selected_smiles[:25]
-                rows.append({"molecule_id": spec_id, "smiles": ";".join(selected_smiles)})
+                        for c in list(curr_cands):
+                            c_smi = c.get("smiles")
+                            if c_smi and c.get("source") != "track_network":
+                                c_m = Chem.MolFromSmiles(c_smi)
+                                if c_m and (c_m.HasSubstructMatch(scaff_m) or scaff_m.HasSubstructMatch(c_m)):
+                                    boosted = True
+                                    if not any(x.get("source") == "track_network" and x.get("inchikey14") == c.get("inchikey14") for x in curr_cands):
+                                        curr_cands.append({
+                                            "inchikey14": c["inchikey14"],
+                                            "smiles": c_smi,
+                                            "score": nc.network_score,
+                                            "source": "track_network",
+                                        })
+                    except Exception:
+                        pass
+                if boosted and spec_id in scored_candidates_by_id:
+                    s_cands = scored_candidates_by_id[spec_id]
+                    for entry in s_cands:
+                        entry_smi = entry.get("smiles")
+                        if entry_smi:
+                            try:
+                                from rdkit import Chem
+                                em = Chem.MolFromSmiles(entry_smi)
+                                for nc in net_cands:
+                                    scaff_smi = getattr(nc, "scaffold_smiles", None)
+                                    if scaff_smi:
+                                        sm = Chem.MolFromSmiles(scaff_smi)
+                                        if em and sm and (em.HasSubstructMatch(sm) or sm.HasSubstructMatch(em)):
+                                            entry["features"][9] = 2.0
+                                            entry["features"][10] = 1.0
+                                            entry["features"][15] = 1.0
+                            except Exception:
+                                pass
+                    ranked_updated = self.meta_ranker.score_candidates(s_cands)
+                    rows[idx] = self._format_row(spec_id, ranked_updated, fmt)
 
         if fmt == "inchikey14":
             sub_df = pd.DataFrame(rows, columns=["id", "candidates"])
