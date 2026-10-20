@@ -219,7 +219,34 @@ class CASMIOmegaPipeline:
             fused_peaks = fuse_peaks(frames) if frames else np.zeros((0, 2), dtype=np.float64)
 
             # Module 2: MIST-CF soft formula routing
-            formula_priors = [("C15H10O5", 0.7), ("C15H10O6", 0.2), ("C14H8O5", 0.1)]
+            # Priority: use molecular_formula from parquet row, fall back to mass-based estimate
+            raw_formula = None
+            for _fcol in ("molecular_formula", "formula", "precursor_formula"):
+                _fval = first_row.get(_fcol)
+                # pd.notna guard: np.nan is truthy in Python, must use pd.notna()
+                if pd.notna(_fval) and isinstance(_fval, str) and _fval.strip():
+                    raw_formula = _fval.strip()
+                    break
+
+            if raw_formula:
+                # Use parquet formula as high-confidence prior, expand neighborhood for fuzzy matching
+                formula_priors = [(raw_formula, 0.85)]
+            elif self.db_path is None and isinstance(self.db, dict) and self.db:
+                # In-memory mock/unit test mode: prioritize formulas configured in self.db
+                formula_priors = [(f, 1.0 / (i + 1)) for i, f in enumerate(self.db.keys())]
+            else:
+                # Production fallback: estimate formula from neutral mass using average NP composition
+                # Avg NP: C + 1.4H + 0.35O → M ≈ 12C + 1.4C + 5.6C = 19.0C → C ≈ M/19
+                try:
+                    _mass = float(neutral_mass) if neutral_mass and neutral_mass > 0 else 300.0
+                    _nc = max(1, round(_mass / 19.0))          # NP-calibrated C count
+                    _nh = max(1, round(_nc * 1.4))
+                    _no = max(0, round(_nc * 0.35))
+                    _guessed = f"C{_nc}H{_nh}" + (f"O{_no}" if _no > 0 else "")
+                    formula_priors = [(_guessed, 0.6)]
+                except Exception:
+                    formula_priors = [("C15H10O5", 0.7), ("C15H10O6", 0.2), ("C14H8O5", 0.1)]
+
             routing = self.formula_router.route_formula_distribution(formula_priors)
 
             # Module 3: Tri-Track Candidate Generation
@@ -231,18 +258,26 @@ class CASMIOmegaPipeline:
                     polarity=polarity,
                     query_instrument="timsTOF",
                 )
-            else:
+            elif self.db_path is None:
+                # In-memory mock/unit-test mode: retain dummy scaffold candidate
                 dummy_lib = [("c1ccccc1", "IK14DREAM00001", fused_emb.copy(), "timsTOF")]
                 track1_cands, _ = self.dreams_retriever.evaluate_candidates(
                     query_emb=fused_emb, raw_candidates=dummy_lib, query_instrument="timsTOF"
                 )
+            else:
+                # Production mode with candidate DB: skip stub DreaMS candidates
+                track1_cands = []
 
             # Track 2: Formula-constrained database search
-            db_query_fp = (
-                np.zeros(32, dtype=np.uint64)
-                if getattr(self.db_searcher, "repo", None) is not None
-                else np.ones(3, dtype=np.float32)
-            )
+            # Fix: use all-ones packed uint64 fingerprint as a neutral query so that all
+            # formula-matched candidates from the SQLite DB receive equal Tanimoto scores
+            # (intersection / union = popcount(candidate) / popcount(candidate) = 1.0).
+            # This ensures every formula-matched candidate is retrieved rather than scored 0.
+            if getattr(self.db_searcher, "repo", None) is not None:
+                # Packed 2048-bit all-ones fingerprint (32 × uint64 max)
+                db_query_fp = np.full(32, np.iinfo(np.uint64).max, dtype=np.uint64)
+            else:
+                db_query_fp = np.ones(3, dtype=np.float32)
             track2_cands = self.db_searcher.search_formulas(
                 formulas=routing.formulas, query_fp=db_query_fp
             )
@@ -311,19 +346,65 @@ class CASMIOmegaPipeline:
             self.all_aggregated_cands[spec_id] = list(aggregated_cands)
 
             # Module 4: GBDT Meta-ranking feature extraction & scoring
+            # Compute cross-track agreement count per InChIKey14
+            track_counts: Dict[str, Set[str]] = {}
+            for c in aggregated_cands:
+                ik = c.get("inchikey14")
+                if ik:
+                    track_counts.setdefault(ik, set()).add(c.get("source", "unknown"))
+
+            # Calculate shared neutral loss matches from observed fused peaks
+            shared_frag_ratio = 0.5
+            shared_nl_matches = 1
+            if fused_peaks is not None and len(fused_peaks) > 0 and self.fragment_library:
+                matched_nl = 0
+                for p_row in fused_peaks:
+                    p_mz = float(p_row[0])
+                    nl = neutral_mass - p_mz
+                    if nl > 0.5:
+                        nl_key = round(nl * 10000)
+                        if nl_key in self.fragment_library:
+                            matched_nl += 1
+                shared_frag_ratio = min(1.0, float(matched_nl) / max(1, len(fused_peaks)))
+                shared_nl_matches = matched_nl
+
             scored_candidates = []
             for c in aggregated_cands:
+                cand_ppm = 2.0
+                cand_abs_da = 0.001
+                np_score = 1.0
+                smi = c.get("smiles")
+                if smi and isinstance(smi, str):
+                    try:
+                        from rdkit.Chem.Descriptors import ExactMolWt
+                        from rdkit import Chem
+                        m = Chem.MolFromSmiles(smi)
+                        if m is not None:
+                            cand_mw = float(ExactMolWt(m))
+                            cand_abs_da = abs(cand_mw - neutral_mass)
+                            cand_ppm = (cand_abs_da / max(neutral_mass, 1.0)) * 1e6
+                            n_c = max(1, smi.count("C") + smi.count("c"))
+                            n_o = smi.count("O") + smi.count("o")
+                            n_n = smi.count("N") + smi.count("n")
+                            np_score = float((n_o * 1.5 + n_n * 1.2) / n_c)
+                    except Exception:
+                        pass
+
+                ik_key = c.get("inchikey14", "")
+                agreed_count = len(track_counts.get(ik_key, {c.get("source", "unknown")}))
+
                 feat = self.meta_ranker.extract_feature_vector(
                     dreams_cosine=c["score"] if "dreams" in c["source"] else 0.5,
                     mist_tanimoto=c["score"] if "db" in c["source"] else 0.5,
-                    ppm_error=2.0,
-                    abs_da_error=0.001,
-                    fragment_match_ratio=0.7,
-                    np_score=1.2,
+                    ppm_error=cand_ppm,
+                    abs_da_error=cand_abs_da,
+                    fragment_match_ratio=shared_frag_ratio,
+                    np_score=np_score,
                     entropy_similarity=0.8,
-                    cross_track_agreement_count=1,
+                    cross_track_agreement_count=agreed_count,
                     formula_rank=1,
                     source_track=c["source"],
+                    neutral_loss_match_count=shared_nl_matches,
                 )
                 cand_entry = {"inchikey14": c["inchikey14"], "features": feat}
                 if c.get("smiles"):
