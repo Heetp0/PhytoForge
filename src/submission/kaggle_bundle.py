@@ -415,7 +415,22 @@ def main() -> None:
         help="Force Kaggle environment detection",
     )
 
-    args = parser.parse_args()
+    # Filter out IPython/Jupyter kernel connection flags when run in notebooks
+    raw_args = sys.argv[1:]
+    filtered_args = []
+    skip_next = False
+    for a in raw_args:
+        if skip_next:
+            skip_next = False
+            continue
+        if a in ("-f", "--f"):
+            skip_next = True
+            continue
+        if "ipykernel" in a or "kernel-" in a or a.endswith(".json"):
+            continue
+        filtered_args.append(a)
+
+    args = parser.parse_args(filtered_args)
     try:
         out = run_kaggle_pipeline(
             input_path=args.input,
@@ -527,7 +542,22 @@ def main() -> None:
         help="Source directory containing src/ package (default: auto-detected repository src/)",
     )
 
-    args = parser.parse_args()
+    # Filter out IPython/Jupyter kernel connection flags when run in notebooks
+    raw_args = sys.argv[1:]
+    filtered_args = []
+    skip_next = False
+    for a in raw_args:
+        if skip_next:
+            skip_next = False
+            continue
+        if a in ("-f", "--f"):
+            skip_next = True
+            continue
+        if "ipykernel" in a or "kernel-" in a or a.endswith(".json"):
+            continue
+        filtered_args.append(a)
+
+    args = parser.parse_args(filtered_args)
 
     try:
         out_path = build_kaggle_kernel(
