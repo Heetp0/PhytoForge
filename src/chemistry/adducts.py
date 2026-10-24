@@ -380,3 +380,52 @@ def get_multihypothesis_precursor_candidates(
         results.append((base_m - 2.0 * CARBON_13_DELTA, "M-2_13C", 0.08))
 
     return results
+
+
+def estimate_carbon_count_from_isotope_cluster(
+    precursor_mz: float,
+    peaks: Optional[np.ndarray],
+    tolerance_da: float = 0.025,
+) -> Optional[float]:
+    """
+    Estimates carbon count n_C from residual unfragmented precursor cluster in low-energy MS2.
+    
+    Scans for monoisotopic peak M0 near precursor_mz and M+1 peak near (precursor_mz + 1.003355 Da).
+    Returns estimated carbon count n_C = (I_M1 / I_M0) / 0.0108 if detected, else None.
+    """
+    if peaks is None or len(peaks) == 0:
+        return None
+    if not isinstance(peaks, np.ndarray) or peaks.ndim != 2 or peaks.shape[1] < 2:
+        return None
+
+    mzs = peaks[:, 0]
+    ints = peaks[:, 1]
+
+    # Find M0 peak closest to precursor_mz
+    m0_diffs = np.abs(mzs - precursor_mz)
+    m0_cand_idx = np.where(m0_diffs <= tolerance_da)[0]
+    if len(m0_cand_idx) == 0:
+        return None
+
+    best_m0_idx = m0_cand_idx[np.argmin(m0_diffs[m0_cand_idx])]
+    i_m0 = float(ints[best_m0_idx])
+    if i_m0 < 0.01:
+        return None
+
+    # Find M+1 peak near (precursor_mz + 1.003355)
+    target_m1 = precursor_mz + CARBON_13_DELTA
+    m1_diffs = np.abs(mzs - target_m1)
+    m1_cand_idx = np.where(m1_diffs <= tolerance_da)[0]
+    if len(m1_cand_idx) == 0:
+        return None
+
+    best_m1_idx = m1_cand_idx[np.argmin(m1_diffs[m1_cand_idx])]
+    i_m1 = float(ints[best_m1_idx])
+    if i_m1 <= 0.0:
+        return None
+
+    ratio = i_m1 / i_m0
+    est_c = ratio / 0.0108
+    if 3.0 <= est_c <= 120.0:
+        return float(est_c)
+    return None

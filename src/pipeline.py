@@ -6,11 +6,12 @@ import pandas as pd
 
 from src.chemistry.adducts import (
     calculate_canonical_neutral_mass,
+    estimate_carbon_count_from_isotope_cluster,
     get_adduct_info,
     get_multihypothesis_precursor_candidates,
 )
 from src.data.multi_energy_fusion import MultiEnergyFusionEngine, SpectralFrame, fuse_peaks
-from src.retrieval.mist_formula_router import MISTFormulaRouter
+from src.retrieval.mist_formula_router import ExactMassFormulaIndex, MISTFormulaRouter
 from src.retrieval.dreams_retrieval import CalibratedDreaMSRetriever
 from src.retrieval.database_search import SoftDatabaseSearcher
 from src.retrieval.generative_denovo import BoundedGenerativeEngine
@@ -202,6 +203,11 @@ class CASMIOmegaPipeline:
         # Initialize pipeline modules (Modules 1 through 6)
         self.fusion_engine = MultiEnergyFusionEngine(embedding_dim=1024)
         self.formula_router = MISTFormulaRouter(entropy_threshold=1.2)
+        self.exact_formula_index = (
+            ExactMassFormulaIndex(db_path=db_path)
+            if db_path is not None
+            else ExactMassFormulaIndex(formulas=list(self.db.keys()))
+        )
         self.dreams_retriever = (
             CalibratedDreaMSRetriever(index=spectral_index_path)
             if spectral_index_path is not None
@@ -483,17 +489,27 @@ class CASMIOmegaPipeline:
                 # In-memory mock/unit test mode: prioritize formulas configured in self.db
                 formula_priors = [(f, 1.0 / (i + 1)) for i, f in enumerate(self.db.keys())]
             else:
-                # Production fallback: estimate formula from neutral mass using average NP composition
-                # Avg NP: C + 1.4H + 0.35O → M ≈ 12C + 1.4C + 5.6C = 19.0C → C ≈ M/19
-                try:
-                    _mass = float(neutral_mass) if neutral_mass and neutral_mass > 0 else 300.0
-                    _nc = max(1, round(_mass / 19.0))          # NP-calibrated C count
-                    _nh = max(1, round(_nc * 1.4))
-                    _no = max(0, round(_nc * 0.35))
-                    _guessed = f"C{_nc}H{_nh}" + (f"O{_no}" if _no > 0 else "")
-                    formula_priors = [(_guessed, 0.6)]
-                except Exception:
-                    formula_priors = [("C15H10O5", 0.7), ("C15H10O6", 0.2), ("C14H8O5", 0.1)]
+                # Production mode: estimate formula using ExactMassFormulaIndex and [M+1] carbon isotope count
+                c_est = estimate_carbon_count_from_isotope_cluster(precursor_mz, fused_peaks)
+                matched_formulas = self.exact_formula_index.find_formulas_by_mass(
+                    target_mass=neutral_mass,
+                    tolerance_ppm=20.0,
+                    target_carbon_estimate=c_est,
+                    max_results=6,
+                )
+                if matched_formulas:
+                    formula_priors = matched_formulas
+                else:
+                    # Robust heuristic fallback
+                    try:
+                        _mass = float(neutral_mass) if neutral_mass and neutral_mass > 0 else 300.0
+                        _nc = max(1, round(_mass / 19.0))          # NP-calibrated C count
+                        _nh = max(1, round(_nc * 1.4))
+                        _no = max(0, round(_nc * 0.35))
+                        _guessed = f"C{_nc}H{_nh}" + (f"O{_no}" if _no > 0 else "")
+                        formula_priors = [(_guessed, 0.6)]
+                    except Exception:
+                        formula_priors = [("C15H10O5", 0.7), ("C15H10O6", 0.2), ("C14H8O5", 0.1)]
 
             routing = self.formula_router.route_formula_distribution(formula_priors)
 

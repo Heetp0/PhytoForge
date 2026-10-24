@@ -1,6 +1,7 @@
 import re
 from dataclasses import dataclass
-from typing import Dict, List, Set, Tuple
+from pathlib import Path
+from typing import Dict, List, Optional, Set, Tuple, Union
 import numpy as np
 
 
@@ -106,3 +107,108 @@ class MISTFormulaRouter:
             entropy=entropy,
             use_formula_free_fallback=use_fallback,
         )
+
+
+class ExactMassFormulaIndex:
+    """Pre-computed exact monoisotopic mass index over chemical formulas for microsecond precursor routing."""
+
+    ELEM_WEIGHTS: Dict[str, float] = {
+        "C": 12.0,
+        "H": 1.00782503223,
+        "O": 15.99491461957,
+        "N": 14.00307400443,
+        "S": 31.9720711744,
+        "P": 30.9737619984,
+        "F": 18.998403163,
+        "Cl": 34.9688527,
+        "Br": 78.9183376,
+        "I": 126.904473,
+    }
+    PATTERN = re.compile(r"([A-Z][a-z]*)(\d*)")
+    CARBON_PATTERN = re.compile(r"C(\d*)")
+
+    def __init__(
+        self,
+        formulas: Optional[List[str]] = None,
+        db_path: Optional[Union[str, Path]] = None,
+    ):
+        self.formulas: List[str] = []
+        self.masses: np.ndarray = np.empty(0, dtype=np.float64)
+        self.carbon_counts: np.ndarray = np.empty(0, dtype=np.int32)
+
+        if formulas is not None:
+            self._build_index(formulas)
+        elif db_path is not None:
+            import sqlite3
+            p = Path(db_path)
+            if p.exists():
+                conn = sqlite3.connect(str(p))
+                cur = conn.cursor()
+                cur.execute("SELECT DISTINCT formula FROM candidates;")
+                forms = [r[0] for r in cur.fetchall()]
+                conn.close()
+                self._build_index(forms)
+
+    @classmethod
+    def compute_formula_mass(cls, formula: str) -> float:
+        """Compute exact monoisotopic neutral mass of Hill chemical formula."""
+        m = 0.0
+        for el, cnt in cls.PATTERN.findall(formula):
+            w = cls.ELEM_WEIGHTS.get(el, 0.0)
+            c = int(cnt) if cnt else 1
+            m += w * c
+        return m
+
+    def _build_index(self, formulas: List[str]) -> None:
+        clean_forms = [f.strip() for f in formulas if f and isinstance(f, str) and f.strip()]
+        self.formulas = clean_forms
+        n = len(clean_forms)
+        masses = np.zeros(n, dtype=np.float64)
+        carbons = np.zeros(n, dtype=np.int32)
+
+        for i, f in enumerate(clean_forms):
+            masses[i] = self.compute_formula_mass(f)
+            c_matches = self.CARBON_PATTERN.findall(f)
+            carbons[i] = sum(int(x or 1) for x in c_matches) if c_matches else 0
+
+        self.masses = masses
+        self.carbon_counts = carbons
+
+    def find_formulas_by_mass(
+        self,
+        target_mass: float,
+        tolerance_ppm: float = 20.0,
+        target_carbon_estimate: Optional[float] = None,
+        max_results: int = 8,
+    ) -> List[Tuple[str, float]]:
+        """Search formulas matching target monoisotopic mass within tolerance_ppm.
+        
+        Optionally uses target_carbon_estimate from [M+1] isotope ratio to prioritize formulas.
+        Returns List of (formula_str, confidence_prior) tuples.
+        """
+        if len(self.masses) == 0 or target_mass <= 0:
+            return []
+
+        tol_da = target_mass * (tolerance_ppm * 1e-6)
+        diffs = np.abs(self.masses - target_mass)
+        matching_indices = np.where(diffs <= tol_da)[0]
+
+        if len(matching_indices) == 0:
+            return []
+
+        matched_items = []
+        for idx in matching_indices:
+            f = self.formulas[idx]
+            da_diff = diffs[idx]
+            ppm_diff = (da_diff / target_mass) * 1e6
+            conf = 1.0 / (1.0 + ppm_diff * 0.1)
+
+            if target_carbon_estimate is not None and target_carbon_estimate > 0:
+                c_diff = abs(self.carbon_counts[idx] - target_carbon_estimate)
+                c_penalty = 1.0 / (1.0 + c_diff * 0.15)
+                conf = conf * 0.6 + c_penalty * 0.4
+
+            matched_items.append((f, float(conf)))
+
+        matched_items.sort(key=lambda x: x[1], reverse=True)
+        return matched_items[:max_results]
