@@ -4,8 +4,19 @@ Generates 33-dimensional multimodal feature matrices, integer relevance labels,
 and query group boundaries for listwise learning-to-rank models.
 """
 
-from typing import List, Tuple
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 import numpy as np
+import pandas as pd
+from rdkit import Chem, DataStructs
+from rdkit.Chem import Descriptors, Lipinski
+from rdkit.Chem.Descriptors import ExactMolWt
+from rdkit.Chem.rdFingerprintGenerator import GetMorganGenerator
+from src.chemistry.adducts import calculate_neutral_mass
+from src.pipeline import _compute_candidate_fragment_match_ratio
+from src.reranking.meta_ranker import GBDTMetaRanker
+from src.retrieval.database_search import DBCandidate, SoftDatabaseSearcher
+from src.retrieval.mist_formula_router import MISTFormulaRouter
 
 
 class RankerDatasetGenerator:
@@ -127,4 +138,284 @@ class RankerDatasetGenerator:
 
         assert not np.isnan(X).any(), "NaN found in generated feature matrix X"
         assert not np.isinf(X).any(), "Inf found in generated feature matrix X"
+        return X, y, groups
+
+
+class AuthenticRankerDatasetBuilder:
+    """Extracts authentic 33-dimensional feature matrices, relevance labels, and query groups from raw training spectra and candidate database."""
+
+    def __init__(
+        self,
+        db_path: Optional[Union[str, Path]] = None,
+        meta_ranker: Optional[GBDTMetaRanker] = None,
+        random_state: int = 42,
+    ) -> None:
+        self.db_path = db_path
+        self.meta_ranker = meta_ranker or GBDTMetaRanker()
+        self.router = MISTFormulaRouter()
+        self.random_state = random_state
+        self.rng = np.random.RandomState(random_state)
+        self.morgan_gen = GetMorganGenerator(radius=2, fpSize=1024)
+
+    def extract_query_candidates_and_features(
+        self,
+        query_row: pd.Series,
+        db_searcher: SoftDatabaseSearcher,
+        db_query_fp: np.ndarray,
+        candidates_per_query: int = 25,
+        fragment_library: Optional[Dict[int, List[str]]] = None,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Extract feature matrix and labels for a single authentic query spectrum."""
+        true_smi = str(query_row.get("normalized_smiles", "")).strip()
+        true_ik14 = str(query_row.get("inchikey14", "")).strip()
+        true_formula = str(query_row.get("molecular_formula", "")).strip()
+
+        if not true_smi or not true_ik14 or not true_formula:
+            return np.empty((0, 33), dtype=np.float32), np.empty((0,), dtype=np.int32)
+
+        try:
+            true_mol = Chem.MolFromSmiles(true_smi)
+        except Exception:
+            true_mol = None
+
+        if true_mol is None:
+            return np.empty((0, 33), dtype=np.float32), np.empty((0,), dtype=np.int32)
+
+        raw_mz = query_row.get("precursor_mz", 300.0)
+        raw_adduct = query_row.get("adduct", "[M+H]+")
+        try:
+            neutral_mass = calculate_neutral_mass(float(raw_mz), str(raw_adduct))
+        except Exception:
+            neutral_mass = float(raw_mz) - 1.007825
+
+        raw_mzs = query_row.get("ms2_mzs", [])
+        raw_ints = query_row.get("ms2_normalized_intensities", [])
+        mzs = np.asarray(raw_mzs, dtype=np.float64) if raw_mzs is not None else np.zeros(0, dtype=np.float64)
+        ints = np.asarray(raw_ints, dtype=np.float64) if raw_ints is not None else np.zeros(0, dtype=np.float64)
+        fused_peaks = (
+            np.column_stack([mzs, ints])
+            if len(mzs) > 0 and len(ints) == len(mzs)
+            else np.zeros((0, 2), dtype=np.float64)
+        )
+
+        true_fp = self.morgan_gen.GetFingerprint(true_mol)
+
+        # 1. Exact formula candidates
+        exact_cands = db_searcher.search_formulas([true_formula], query_fp=db_query_fp)
+        cand_iks = {c.inchikey14 for c in exact_cands}
+
+        # Inject ground-truth molecule if not present
+        gt_cand = None
+        for c in exact_cands:
+            if c.inchikey14 == true_ik14:
+                gt_cand = c
+                break
+        if gt_cand is None:
+            gt_popcount = float(true_fp.GetNumOnBits()) / 2048.0 if hasattr(true_fp, "GetNumOnBits") else 0.10
+            gt_cand = DBCandidate(
+                smiles=true_smi,
+                inchikey14=true_ik14,
+                tanimoto_score=gt_popcount,
+                source_tier="track2_db",
+            )
+            exact_cands.append(gt_cand)
+            cand_iks.add(true_ik14)
+
+        # 2. Neighbor formula candidates (+/- 1H, +/- 1O) for mass-shift negative training
+        neighbor_formulas = [f for f in self.router.expand_neighborhood(true_formula) if f != true_formula]
+        neighbor_cands = db_searcher.search_formulas(neighbor_formulas, query_fp=db_query_fp) if neighbor_formulas else []
+        neighbor_cands = [c for c in neighbor_cands if c.inchikey14 not in cand_iks]
+        for c in neighbor_cands:
+            cand_iks.add(c.inchikey14)
+
+        # 3. Distractor candidates from fallback scaffolds
+        distractor_cands = [
+            DBCandidate(smiles=s, inchikey14=ik, tanimoto_score=0.01, source_tier="track2_fallback")
+            for s, ik, _ in getattr(db_searcher, "fallback_scaffolds", [])[:5]
+            if ik not in cand_iks
+        ]
+
+        # Allocate slots: ensure gt_cand + exact isomers (up to 12) + neighbor cands (up to 8) + distractors (up to 4)
+        exact_isomers = [c for c in exact_cands if c.inchikey14 != true_ik14]
+        if len(exact_isomers) > 12:
+            perm_iso = self.rng.permutation(len(exact_isomers))
+            exact_isomers = [exact_isomers[i] for i in perm_iso[:12]]
+        if len(neighbor_cands) > 8:
+            perm_nbr = self.rng.permutation(len(neighbor_cands))
+            neighbor_cands = [neighbor_cands[i] for i in perm_nbr[:8]]
+        if len(distractor_cands) > 4:
+            perm_dis = self.rng.permutation(len(distractor_cands))
+            distractor_cands = [distractor_cands[i] for i in perm_dis[:4]]
+
+        selected_cands = [gt_cand] + exact_isomers + neighbor_cands + distractor_cands
+        if len(selected_cands) > candidates_per_query:
+            rest = selected_cands[1:]
+            perm_rest = self.rng.permutation(len(rest))
+            selected_cands = [gt_cand] + [rest[i] for i in perm_rest[: (candidates_per_query - 1)]]
+
+        if not selected_cands:
+            return np.empty((0, 33), dtype=np.float32), np.empty((0,), dtype=np.int32)
+
+        # Shuffle candidates within the query so true candidate is not always at index 0
+        shuffle_idx = self.rng.permutation(len(selected_cands))
+        selected_cands = [selected_cands[i] for i in shuffle_idx]
+
+        # Calculate neutral loss match count
+        shared_nl_matches = 1
+        if fused_peaks is not None and len(fused_peaks) > 0 and fragment_library:
+            matched_nl = 0
+            for p_row in fused_peaks:
+                p_mz = float(p_row[0])
+                nl = neutral_mass - p_mz
+                if nl > 0.5:
+                    nl_key = round(nl * 10000)
+                    if nl_key in fragment_library:
+                        matched_nl += 1
+            shared_nl_matches = matched_nl
+
+        n_cands = len(selected_cands)
+        X_query = np.zeros((n_cands, 33), dtype=np.float32)
+        y_query = np.zeros(n_cands, dtype=np.int32)
+
+        for idx, cand in enumerate(selected_cands):
+            c_smi = cand.smiles
+            c_ik = cand.inchikey14
+
+            c_mol = None
+            if c_smi:
+                try:
+                    c_mol = Chem.MolFromSmiles(c_smi)
+                except Exception:
+                    c_mol = None
+
+            cand_ppm = 2.0
+            cand_abs_da = 0.001
+            np_score = 1.0
+            cand_frag_ratio = 0.5
+            mw_norm = min(1.0, neutral_mass / 1000.0)
+            hbd = 2.0
+            hba = 4.0
+            rot_b = 3.0
+            tpsa = 0.35
+            arom_ratio = 0.5
+
+            if c_mol is not None:
+                try:
+                    cand_mw = float(ExactMolWt(c_mol))
+                    cand_abs_da = abs(cand_mw - neutral_mass)
+                    cand_ppm = (cand_abs_da / max(neutral_mass, 1.0)) * 1e6
+                    n_c = max(1, c_smi.count("C") + c_smi.count("c"))
+                    n_o = c_smi.count("O") + c_smi.count("o")
+                    n_n = c_smi.count("N") + c_smi.count("n")
+                    np_score = float((n_o * 1.5 + n_n * 1.2) / n_c)
+                    cand_frag_ratio = _compute_candidate_fragment_match_ratio(
+                        mol=c_mol, fused_peaks=fused_peaks, neutral_mass=neutral_mass
+                    )
+                    mw_norm = min(1.0, cand_mw / 1000.0)
+                    hbd = float(Lipinski.NumHDonors(c_mol))
+                    hba = float(Lipinski.NumHAcceptors(c_mol))
+                    rot_b = float(Lipinski.NumRotatableBonds(c_mol))
+                    tpsa = float(Descriptors.TPSA(c_mol) / 200.0)
+                    arom_ratio = float(Descriptors.FractionCSP3(c_mol))
+                except Exception:
+                    pass
+
+            feat = self.meta_ranker.extract_feature_vector(
+                dreams_cosine=cand.tanimoto_score if "dreams" in cand.source_tier else 0.5,
+                mist_tanimoto=cand.tanimoto_score if "db" in cand.source_tier else 0.5,
+                ppm_error=cand_ppm,
+                abs_da_error=cand_abs_da,
+                fragment_match_ratio=cand_frag_ratio,
+                np_score=np_score,
+                entropy_similarity=0.8,
+                cross_track_agreement_count=1,
+                formula_rank=1,
+                source_track=cand.source_tier,
+                molecular_weight_norm=mw_norm,
+                h_bond_donors_est=hbd,
+                h_bond_acceptors_est=hba,
+                rotatable_bonds_est=rot_b,
+                tpsa_est_norm=tpsa,
+                aromatic_ring_ratio=arom_ratio,
+                neutral_loss_match_count=shared_nl_matches,
+            )
+            X_query[idx] = feat
+
+            # Relevance assignment
+            if c_ik == true_ik14:
+                y_query[idx] = 3
+            elif c_mol is not None:
+                try:
+                    c_fp = self.morgan_gen.GetFingerprint(c_mol)
+                    sim = float(DataStructs.TanimotoSimilarity(true_fp, c_fp))
+                    if sim >= 0.65:
+                        y_query[idx] = 2
+                    elif sim >= 0.40:
+                        y_query[idx] = 1
+                    else:
+                        y_query[idx] = 0
+                except Exception:
+                    y_query[idx] = 0
+            else:
+                y_query[idx] = 0
+
+        return X_query, y_query
+
+    def build_dataset_from_dataframe(
+        self,
+        df: pd.DataFrame,
+        db_searcher: SoftDatabaseSearcher,
+        n_queries: int = 500,
+        candidates_per_query: int = 25,
+        holdout_inchikey14s: Optional[Set[str]] = None,
+        fragment_library: Optional[Dict[int, List[str]]] = None,
+    ) -> Tuple[np.ndarray, np.ndarray, List[int]]:
+        """Build multimodal ranking dataset from an authentic training DataFrame."""
+        if getattr(db_searcher, "repo", None) is not None:
+            db_query_fp = np.full(32, np.iinfo(np.uint64).max, dtype=np.uint64)
+        else:
+            db_query_fp = np.ones(3, dtype=np.float32)
+
+        holdouts = holdout_inchikey14s or set()
+        all_X: List[np.ndarray] = []
+        all_y: List[np.ndarray] = []
+        groups: List[int] = []
+
+        seen_queries = set()
+
+        for idx in range(len(df)):
+            if len(groups) >= n_queries:
+                break
+
+            row = df.iloc[idx]
+            ik14 = str(row.get("inchikey14", "")).strip()
+            if not ik14 or ik14 in holdouts or ik14 in seen_queries:
+                continue
+
+            X_q, y_q = self.extract_query_candidates_and_features(
+                query_row=row,
+                db_searcher=db_searcher,
+                db_query_fp=db_query_fp,
+                candidates_per_query=candidates_per_query,
+                fragment_library=fragment_library,
+            )
+
+            # Require at least 2 candidates and at least one positive label for learning-to-rank
+            if len(y_q) >= 2 and (y_q > 0).any():
+                all_X.append(X_q)
+                all_y.append(y_q)
+                groups.append(len(y_q))
+                seen_queries.add(ik14)
+
+        if not all_X:
+            return (
+                np.empty((0, 33), dtype=np.float32),
+                np.empty((0,), dtype=np.int32),
+                [],
+            )
+
+        X = np.vstack(all_X)
+        y = np.concatenate(all_y)
+        assert not np.isnan(X).any(), "NaN found in authentic feature matrix X"
+        assert not np.isinf(X).any(), "Inf found in authentic feature matrix X"
         return X, y, groups
