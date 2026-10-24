@@ -142,12 +142,21 @@ class ExactMassFormulaIndex:
             import sqlite3
             p = Path(db_path)
             if p.exists():
-                conn = sqlite3.connect(str(p))
-                cur = conn.cursor()
-                cur.execute("SELECT DISTINCT formula FROM candidates;")
-                forms = [r[0] for r in cur.fetchall()]
-                conn.close()
-                self._build_index(forms)
+                try:
+                    conn = sqlite3.connect(f"file:{p.resolve().as_posix()}?mode=ro", uri=True)
+                except Exception:
+                    conn = sqlite3.connect(str(p))
+                try:
+                    cur = conn.cursor()
+                    cur.execute("SELECT DISTINCT formula FROM candidates;")
+                    forms = [r[0] for r in cur.fetchall()]
+                    conn.close()
+                    self._build_index(forms)
+                except Exception:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
 
     @classmethod
     def compute_formula_mass(cls, formula: str) -> float:

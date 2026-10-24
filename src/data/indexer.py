@@ -303,7 +303,10 @@ def run_tanimoto_benchmark(
                 repo = ChemicalDatabaseRepository(db_path)
                 cursor = repo.conn.cursor()
             else:
-                conn = sqlite3.connect(str(db_path))
+                try:
+                    conn = sqlite3.connect(f"file:{Path(db_path).resolve().as_posix()}?mode=ro", uri=True)
+                except Exception:
+                    conn = sqlite3.connect(str(db_path))
                 cursor = conn.cursor()
             cursor.execute("SELECT fingerprint FROM candidates LIMIT ?;", (num_candidates,))
             rows = cursor.fetchall()
