@@ -140,10 +140,18 @@ class ExactMassFormulaIndex:
             self._build_index(formulas)
         elif db_path is not None:
             import sqlite3
-            p = Path(db_path)
+            p = Path(db_path).resolve()
             if p.exists():
+                if "/kaggle/input" in str(p):
+                    import shutil
+                    writable_dir = Path("/tmp/phytoforge_db")
+                    writable_dir.mkdir(parents=True, exist_ok=True)
+                    target_copy = writable_dir / p.name
+                    if not target_copy.exists():
+                        shutil.copy2(p, target_copy)
+                    p = target_copy
                 try:
-                    conn = sqlite3.connect(f"file:{p.resolve().as_posix()}?mode=ro", uri=True)
+                    conn = sqlite3.connect(f"file:{p.as_posix()}?mode=ro", uri=True)
                 except Exception:
                     conn = sqlite3.connect(str(p))
                 try:

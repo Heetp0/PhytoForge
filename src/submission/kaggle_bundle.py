@@ -87,25 +87,44 @@ class KaggleEnvironmentConfig:
         Returns explicit path if provided, otherwise searches candidate databases (*.db).
         Returns None if not found.
         """
+        resolved: Optional[Path] = None
         if self.candidate_db_path is not None:
-            return self.candidate_db_path if self.candidate_db_path.exists() else None
+            resolved = self.candidate_db_path if self.candidate_db_path.exists() else None
+        else:
+            for root in self._get_search_roots():
+                # Check exact candidate database names
+                for target_name in ("candidates.db", "compound_candidates.db"):
+                    exact = root / target_name
+                    if exact.is_file():
+                        resolved = exact
+                        break
+                if resolved is not None:
+                    break
 
-        for root in self._get_search_roots():
-            # Check exact candidate database names
-            for target_name in ("candidates.db", "compound_candidates.db"):
-                exact = root / target_name
-                if exact.is_file():
-                    return exact
+                # Recursive search for candidates*.db or *.db
+                try:
+                    for match in root.rglob("*.db"):
+                        if match.is_file() and not match.name.startswith("."):
+                            resolved = match
+                            break
+                except (PermissionError, OSError):
+                    continue
+                if resolved is not None:
+                    break
 
-            # Recursive search for candidates*.db or *.db
-            try:
-                for match in root.rglob("*.db"):
-                    if match.is_file() and not match.name.startswith("."):
-                        return match
-            except (PermissionError, OSError):
-                continue
+        if resolved is not None and self.is_kaggle_environment():
+            resolved_str = str(resolved.resolve())
+            if "/kaggle/input" in resolved_str:
+                import shutil
+                writable_dir = Path("/tmp/phytoforge_db")
+                writable_dir.mkdir(parents=True, exist_ok=True)
+                target_copy = writable_dir / resolved.name
+                if not target_copy.exists():
+                    print(f">>> Copying candidate DB to writable location: {target_copy}...")
+                    shutil.copy2(resolved, target_copy)
+                return target_copy
 
-        return None
+        return resolved
 
     def resolve_spectral_index(self) -> Optional[Path]:
         """
@@ -313,6 +332,7 @@ def run_kaggle_pipeline(
 
     resolved_output = config.resolve_submission_output()
     resolved_output.parent.mkdir(parents=True, exist_ok=True)
+    print(">>> PhytoForge v1.0.6 [Writable DB Mirror Active] - Initializing pipeline...")
 
     # Load test dataset
     if resolved_test.suffix == ".parquet":

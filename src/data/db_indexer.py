@@ -456,8 +456,21 @@ class ChemicalDatabaseRepository:
             if not path_obj.exists():
                 raise FileNotFoundError(f"Chemical database file not found: {path_obj}")
 
-            uri = f"file:{path_obj.as_posix()}?mode=ro"
-            self.conn = sqlite3.connect(uri, uri=True)
+            if "/kaggle/input" in str(path_obj):
+                import shutil
+                writable_dir = Path("/tmp/phytoforge_db")
+                writable_dir.mkdir(parents=True, exist_ok=True)
+                target_copy = writable_dir / path_obj.name
+                if not target_copy.exists():
+                    print(f">>> Copying candidate DB to writable location: {target_copy}...")
+                    shutil.copy2(path_obj, target_copy)
+                path_obj = target_copy
+
+            try:
+                uri = f"file:{path_obj.as_posix()}?mode=ro"
+                self.conn = sqlite3.connect(uri, uri=True)
+            except Exception:
+                self.conn = sqlite3.connect(str(path_obj))
             self._owns_conn = True
 
         # Apply inference-time read pragmas
@@ -465,6 +478,7 @@ class ChemicalDatabaseRepository:
             "PRAGMA mmap_size=30000000000;",  # 30 GB mmap window
             "PRAGMA query_only=ON;",
             "PRAGMA threads=4;",
+            "PRAGMA temp_store=MEMORY;",
         ]:
             try:
                 self.conn.execute(pragma)
