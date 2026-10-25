@@ -13,7 +13,8 @@ from src.chemistry.adducts import (
 )
 from src.data.multi_energy_fusion import MultiEnergyFusionEngine, SpectralFrame, fuse_peaks
 from src.retrieval.mist_formula_router import ExactMassFormulaIndex, MISTFormulaRouter
-from src.retrieval.dreams_retrieval import CalibratedDreaMSRetriever
+from src.retrieval.dreams_retrieval import CalibratedDreaMSRetriever, RetrievedCandidate
+from src.retrieval.reference_spectral_matcher import ReferenceSpectralMatcher
 from src.retrieval.database_search import SoftDatabaseSearcher
 from src.retrieval.generative_denovo import BoundedGenerativeEngine
 from src.retrieval.transductive_networking import (
@@ -185,6 +186,7 @@ class CASMIOmegaPipeline:
         spectral_index_path: Optional[Union[str, Path]] = None,
         fragment_library: Optional[Dict[int, List[str]]] = None,
         meta_ranker_path: Optional[Union[str, Path]] = None,
+        train_data_path: Optional[Union[str, Path]] = None,
     ):
         self.fallback_pool = [f"IK14FALL{i:06d}" for i in range(50)]
         self.db = db if db is not None else {
@@ -198,6 +200,7 @@ class CASMIOmegaPipeline:
         self.spectral_index_path = spectral_index_path
         self.fragment_library = fragment_library
         self.meta_ranker_path = meta_ranker_path
+        self.train_data_path = train_data_path
         self.last_aggregated_cands: List[Dict[str, Any]] = []
         self.all_aggregated_cands: Dict[str, List[Dict[str, Any]]] = {}
         self.solved_scaffolds: Dict[str, Tuple[str, str]] = {}
@@ -215,6 +218,7 @@ class CASMIOmegaPipeline:
             if spectral_index_path is not None
             else CalibratedDreaMSRetriever()
         )
+        self.ref_spectral_matcher = ReferenceSpectralMatcher(train_path=train_data_path)
         self.db_searcher = SoftDatabaseSearcher(
             db=self.db,
             fallback_scaffolds=self.fallback_scaffolds,
@@ -527,8 +531,28 @@ class CASMIOmegaPipeline:
             routing = self.formula_router.route_formula_distribution(formula_priors)
 
             # Module 3: Tri-Track Candidate Generation
-            # Track 1: DreaMS library retrieval
-            if getattr(self.dreams_retriever, "has_index", False):
+            # Track 1: Reference authentic spectral matching & DreaMS library retrieval
+            track1_cands = []
+            if getattr(self, "ref_spectral_matcher", None) is not None and self.ref_spectral_matcher.is_available():
+                ref_hits = self.ref_spectral_matcher.match_query(
+                    precursor_mz=precursor_mz,
+                    peaks=fused_peaks,
+                    adduct=adduct,
+                    tolerance_ppm=10.0,
+                    min_cosine=0.50,
+                    max_results=25,
+                )
+                for rh in ref_hits:
+                    track1_cands.append(
+                        RetrievedCandidate(
+                            smiles=rh["smiles"],
+                            inchikey14=rh["inchikey14"],
+                            score=rh["score"],
+                            instrument="timsTOF",
+                            source_tier="track1_dreams",
+                        )
+                    )
+            elif getattr(self.dreams_retriever, "has_index", False):
                 track1_cands, _ = self.dreams_retriever.evaluate_candidates(
                     query_emb=fused_emb,
                     precursor_mz=precursor_mz,
@@ -555,9 +579,28 @@ class CASMIOmegaPipeline:
                 db_query_fp = np.full(32, np.iinfo(np.uint64).max, dtype=np.uint64)
             else:
                 db_query_fp = np.ones(3, dtype=np.float32)
-            track2_cands = self.db_searcher.search_formulas(
-                formulas=routing.formulas, query_fp=db_query_fp
-            )
+
+            track2_cands = []
+            seen_t2_iks = set()
+            # Prioritize formulas in descending order of posterior probability
+            for form_entry in formula_priors:
+                form = form_entry[0] if isinstance(form_entry, (tuple, list)) else form_entry
+                prob = form_entry[1] if isinstance(form_entry, (tuple, list)) and len(form_entry) > 1 else 1.0
+                f_cands = self.db_searcher.search_formulas(formulas=[form], query_fp=db_query_fp)
+                for fc in f_cands:
+                    if getattr(fc, "source_tier", "") == "track2_fallback":
+                        continue
+                    if fc.inchikey14 not in seen_t2_iks:
+                        seen_t2_iks.add(fc.inchikey14)
+                        setattr(fc, "formula_prior_prob", prob)
+                        track2_cands.append(fc)
+                if len(track2_cands) >= 60:
+                    break
+
+            if not track2_cands:
+                track2_cands = self.db_searcher.search_formulas(
+                    formulas=routing.formulas, query_fp=db_query_fp
+                )
 
             # Multi-adduct hypothesis expansion when primary formula retrieval yields sparse candidates (< 5)
             # or when primary candidate spectral matches are low (max(score) < 0.20)
@@ -653,9 +696,20 @@ class CASMIOmegaPipeline:
             # Aggregate multi-track candidates
             aggregated_cands = []
             for c in track1_cands:
-                aggregated_cands.append({"inchikey14": c.inchikey14, "smiles": getattr(c, "smiles", None), "score": c.score, "source": "track1_dreams"})
+                aggregated_cands.append({
+                    "inchikey14": c.inchikey14,
+                    "smiles": getattr(c, "smiles", None),
+                    "score": c.score,
+                    "source": "track1_dreams",
+                })
             for c in track2_cands:
-                aggregated_cands.append({"inchikey14": c.inchikey14, "smiles": getattr(c, "smiles", None), "score": c.tanimoto_score, "source": "track2_db"})
+                aggregated_cands.append({
+                    "inchikey14": c.inchikey14,
+                    "smiles": getattr(c, "smiles", None),
+                    "score": getattr(c, "tanimoto_score", 0.5),
+                    "source": "track2_db",
+                    "formula": getattr(c, "formula", None),
+                })
             for c in track3_cands:
                 aggregated_cands.append({"inchikey14": c.inchikey14, "smiles": getattr(c, "smiles", None), "score": c.score, "source": "track3_denovo"})
             for c in network_cands:
@@ -745,6 +799,25 @@ class CASMIOmegaPipeline:
                 cand_frag_ratio = shared_frag_ratio
                 bot_score = 0.5
                 smi = c.get("smiles")
+                cand_form = c.get("formula")
+
+                # Pure-Python formula mass calculation if formula is known
+                if cand_form and isinstance(cand_form, str):
+                    try:
+                        cand_mw = ExactMassFormulaIndex.compute_formula_mass(cand_form)
+                        cand_abs_da = abs(cand_mw - neutral_mass)
+                        cand_ppm = (cand_abs_da / max(neutral_mass, 1.0)) * 1e6
+                    except Exception:
+                        pass
+
+                # Pure-Python heteroatom ratio (Natural Product likeness proxy)
+                if smi and isinstance(smi, str):
+                    n_c = max(1, smi.count("C") + smi.count("c"))
+                    n_o = smi.count("O") + smi.count("o")
+                    n_n = smi.count("N") + smi.count("n")
+                    np_score = float((n_o * 1.5 + n_n * 1.2) / n_c)
+
+                # Optional RDKit refinement (in-silico bond cleavage & exact MW)
                 m = None
                 if smi and isinstance(smi, str):
                     try:
@@ -755,10 +828,6 @@ class CASMIOmegaPipeline:
                             cand_mw = float(ExactMolWt(m))
                             cand_abs_da = abs(cand_mw - neutral_mass)
                             cand_ppm = (cand_abs_da / max(neutral_mass, 1.0)) * 1e6
-                            n_c = max(1, smi.count("C") + smi.count("c"))
-                            n_o = smi.count("O") + smi.count("o")
-                            n_n = smi.count("N") + smi.count("n")
-                            np_score = float((n_o * 1.5 + n_n * 1.2) / n_c)
 
                             cand_in_silico = _compute_candidate_fragment_match_ratio(
                                 mol=m, fused_peaks=fused_peaks, neutral_mass=neutral_mass
@@ -787,11 +856,18 @@ class CASMIOmegaPipeline:
                 base_mist = cand_frag_ratio if "db" in c["source"] else c.get("score", 0.5)
                 blended_mist = float(np.clip(0.40 * base_mist + 0.60 * bot_score, 0.001, 0.999))
 
+                # If candidate comes from authentic spectral match (track1) with high cosine, boost score
+                dreams_cos = c["score"] if "dreams" in c["source"] else 0.5
+                if "dreams" in c["source"] and c.get("score", 0.0) >= 0.70:
+                    dreams_cos = 1.0
+                    blended_mist = max(blended_mist, 0.95)
+                    cand_frag_ratio = max(cand_frag_ratio, 0.95)
+
                 ik_key = c.get("inchikey14", "")
                 agreed_count = len(track_counts.get(ik_key, {c.get("source", "unknown")}))
 
                 feat = self.meta_ranker.extract_feature_vector(
-                    dreams_cosine=c["score"] if "dreams" in c["source"] else 0.5,
+                    dreams_cosine=dreams_cos,
                     mist_tanimoto=blended_mist,
                     ppm_error=cand_ppm,
                     abs_da_error=cand_abs_da,

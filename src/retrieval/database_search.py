@@ -12,6 +12,7 @@ class DBCandidate:
     inchikey14: str
     tanimoto_score: float
     source_tier: str = "track2_db"
+    formula: Optional[str] = None
 
 
 class SoftDatabaseSearcher:
@@ -79,6 +80,7 @@ class SoftDatabaseSearcher:
                             inchikey14=ik14,
                             tanimoto_score=float(score),
                             source_tier="track2_db",
+                            formula=form,
                         )
                     )
 
@@ -101,7 +103,7 @@ class SoftDatabaseSearcher:
         candidates: List[DBCandidate] = []
         seen_ik14 = set()
 
-        batch_mols: List[Tuple[str, str]] = []
+        batch_mols: List[Tuple[str, str, str]] = []
         batch_fps: List[np.ndarray] = []
 
         for form in formulas:
@@ -109,18 +111,19 @@ class SoftDatabaseSearcher:
                 if ik14 in seen_ik14:
                     continue
                 seen_ik14.add(ik14)
-                batch_mols.append((smiles, ik14))
+                batch_mols.append((smiles, ik14, form))
                 batch_fps.append(mol_fp)
 
         if batch_fps:
             fps_matrix = np.stack(batch_fps, axis=0)
             scores = self.batch_tanimoto(query_fp, fps_matrix)
-            for (smiles, ik14), score in zip(batch_mols, scores):
+            for (smiles, ik14, form), score in zip(batch_mols, scores):
                 candidates.append(
                     DBCandidate(
                         smiles=smiles,
                         inchikey14=ik14,
                         tanimoto_score=float(score),
+                        formula=form,
                     )
                 )
 

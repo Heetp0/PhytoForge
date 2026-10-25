@@ -34,6 +34,7 @@ class KaggleEnvironmentConfig:
         spectral_index_path: Optional[Union[str, Path]] = None,
         fragment_library_path: Optional[Union[str, Path]] = None,
         meta_ranker_model_path: Optional[Union[str, Path]] = None,
+        train_data_path: Optional[Union[str, Path]] = None,
         test_data_path: Optional[Union[str, Path]] = None,
         submission_output_path: Optional[Union[str, Path]] = None,
         force_kaggle: Optional[bool] = None,
@@ -43,6 +44,7 @@ class KaggleEnvironmentConfig:
         self.spectral_index_path = Path(spectral_index_path) if spectral_index_path is not None else None
         self.fragment_library_path = Path(fragment_library_path) if fragment_library_path is not None else None
         self.meta_ranker_model_path = Path(meta_ranker_model_path) if meta_ranker_model_path is not None else None
+        self.train_data_path = Path(train_data_path) if train_data_path is not None else None
         self.test_data_path = Path(test_data_path) if test_data_path is not None else None
         self.submission_output_path = Path(submission_output_path) if submission_output_path is not None else None
         self.force_kaggle = force_kaggle
@@ -230,6 +232,28 @@ class KaggleEnvironmentConfig:
 
         return None
 
+    def resolve_train_data(self) -> Optional[Path]:
+        """
+        Resolve path to authentic training dataset (train.parquet).
+        Returns None if not found.
+        """
+        if self.train_data_path is not None:
+            return self.train_data_path if self.train_data_path.exists() else None
+
+        for root in self._get_search_roots():
+            for name in ("train.parquet",):
+                direct = root / name
+                if direct.is_file():
+                    return direct
+            try:
+                for match in root.rglob("train.parquet"):
+                    if match.is_file():
+                        return match
+            except (PermissionError, OSError):
+                continue
+
+        return None
+
     def resolve_submission_output(self) -> Path:
         """
         Resolve destination path for submission CSV.
@@ -251,6 +275,7 @@ class KaggleEnvironmentConfig:
             "spectral_index": self.resolve_spectral_index(),
             "fragment_library": self.resolve_fragment_library(),
             "meta_ranker_model": self.resolve_meta_ranker_model(),
+            "train_data": self.resolve_train_data(),
             "test_data": self.resolve_test_data(),
             "submission_output": self.resolve_submission_output(),
         }
@@ -309,6 +334,7 @@ def run_kaggle_pipeline(
     spectral_index_path: str | Path | None = None,
     fragment_library_path: str | Path | None = None,
     meta_ranker_path: str | Path | None = None,
+    train_data_path: str | Path | None = None,
     governor_limit_per_spec: float = 21.3,
     governor_reserve: float = 480.0,
     force_kaggle: bool | None = None,
@@ -319,6 +345,7 @@ def run_kaggle_pipeline(
         spectral_index_path=spectral_index_path,
         fragment_library_path=fragment_library_path,
         meta_ranker_model_path=meta_ranker_path,
+        train_data_path=train_data_path,
         test_data_path=input_path,
         submission_output_path=output_path,
         force_kaggle=force_kaggle,
@@ -376,6 +403,7 @@ def run_kaggle_pipeline(
     resolved_index = config.resolve_spectral_index()
     resolved_frag = config.resolve_fragment_library()
     resolved_ranker = config.resolve_meta_ranker_model()
+    resolved_train = config.resolve_train_data()
 
     frag_lib = None
     if resolved_frag is not None:
@@ -395,13 +423,15 @@ def run_kaggle_pipeline(
     idx_name = resolved_index.name if resolved_index else "none"
     fl_status = "loaded" if frag_lib is not None else "none"
     rk_name = resolved_ranker.name if resolved_ranker else "none"
-    print(">>> Resolved assets: DB=" + str(db_name) + ", Index=" + str(idx_name) + ", FragLib=" + str(fl_status) + ", Ranker=" + str(rk_name))
+    tr_name = resolved_train.name if resolved_train else "none"
+    print(">>> Resolved assets: DB=" + str(db_name) + ", Index=" + str(idx_name) + ", FragLib=" + str(fl_status) + ", Ranker=" + str(rk_name) + ", TrainRef=" + str(tr_name))
 
     with CASMIOmegaPipeline(
         db_path=resolved_db,
         spectral_index_path=resolved_index,
         fragment_library=frag_lib,
         meta_ranker_path=resolved_ranker,
+        train_data_path=resolved_train,
         governor_budget_seconds=total_budget,
     ) as pipeline:
         pipeline.run(
@@ -432,6 +462,7 @@ def main() -> None:
     parser.add_argument("--spectral-index-path", type=str, default=None, help="Path to spectral index")
     parser.add_argument("--fragment-library-path", type=str, default=None, help="Path to fragment library")
     parser.add_argument("--meta-ranker-path", type=str, default=None, help="Path to meta-ranker model")
+    parser.add_argument("--train-data-path", type=str, default=None, help="Path to authentic train parquet reference library")
     parser.add_argument("--governor", type=float, default=21.3, help="Max budget per spectrum in seconds")
     parser.add_argument("--reserve", type=float, default=480.0, help="Governor reserve seconds")
     parser.add_argument(
@@ -452,6 +483,7 @@ def main() -> None:
             spectral_index_path=args.spectral_index_path,
             fragment_library_path=args.fragment_library_path,
             meta_ranker_path=args.meta_ranker_path,
+            train_data_path=args.train_data_path,
             governor_limit_per_spec=args.governor,
             governor_reserve=args.reserve,
             force_kaggle=args.force_kaggle,

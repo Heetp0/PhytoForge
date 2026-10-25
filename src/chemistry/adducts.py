@@ -127,7 +127,10 @@ EXTENDED_ADDUCTS: Dict[str, AdductInfo] = {
 # Common spelling / formatting aliases mapped to canonical names
 ADDUCT_ALIASES: Dict[str, str] = {
     "[M+HCOO]-": "[M+FA-H]-",
+    "[M+CH2O2-H]-": "[M+FA-H]-",
+    "[M+FORMATE-H]-": "[M+FA-H]-",
     "[M+CH3COO]-": "[M+Hac-H]-",
+    "[M+ACETATE-H]-": "[M+Hac-H]-",
     "[M+OAC]-": "[M+Hac-H]-",
     "[M+H-H2O]+": "[M-H2O+H]+",
     "[M-H-H2O]-": "[M-H2O-H]-",
