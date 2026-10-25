@@ -69,7 +69,7 @@ class ReferenceSpectralMatcher:
     def __init__(
         self,
         train_path: Optional[Union[str, Path]] = None,
-        max_row_groups: Optional[int] = None,
+        max_row_groups: Optional[int] = 9,
     ):
         self.train_path = Path(train_path) if train_path is not None else None
         self.is_loaded: bool = False

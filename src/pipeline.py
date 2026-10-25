@@ -983,6 +983,7 @@ def run_casmi_omega_pipeline(
     spectral_index_path: Optional[Union[str, Path]] = None,
     fragment_library: Optional[Dict[int, List[str]]] = None,
     meta_ranker_path: Optional[Union[str, Path]] = None,
+    train_data_path: Optional[Union[str, Path]] = None,
 ) -> pd.DataFrame:
     """Execute CASMIOmegaPipeline on test DataFrame and export validated submission CSV."""
     with CASMIOmegaPipeline(
@@ -993,6 +994,7 @@ def run_casmi_omega_pipeline(
         spectral_index_path=spectral_index_path,
         fragment_library=fragment_library,
         meta_ranker_path=meta_ranker_path,
+        train_data_path=train_data_path,
     ) as pipeline:
         return pipeline.run(test_df, output_path=output_path, output_format=output_format)
 

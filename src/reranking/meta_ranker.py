@@ -19,7 +19,11 @@ class GBDTMetaRanker:
         model_path: Optional[Union[str, Path]] = None,
     ):
         # Default heuristic weights if offline model not loaded
-        self.weights = weights if weights is not None else np.ones(33, dtype=np.float32)
+        # Feature 0 (dreams_cosine) receives dominant priority (50.0) so authentic
+        # reference spectra matches are ranked #1 even in zero-model fallback mode.
+        default_weights = np.ones(33, dtype=np.float32)
+        default_weights[0] = 50.0
+        self.weights = weights if weights is not None else default_weights
         self.booster = booster
         if self.booster is None and model_path is not None:
             p = Path(model_path)

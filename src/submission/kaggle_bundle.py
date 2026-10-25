@@ -197,10 +197,14 @@ class KaggleEnvironmentConfig:
                 continue
 
             # Check model.txt or lightgbm.txt
-            for name in ("model.txt", "lightgbm_model.txt", "ranker.txt"):
+            for name in ("model.txt", "lightgbm_model.txt", "ranker.txt", "meta_ranker.txt"):
                 target = root / name
                 if target.is_file():
                     return target
+
+        bootstrap_model = Path.cwd() / ".kaggle_bundle_src" / "meta_ranker.txt"
+        if bootstrap_model.is_file():
+            return bootstrap_model
 
         return None
 
@@ -300,9 +304,12 @@ import zipfile
 # Embedded source archive of PhytoForge src/ packages
 EMBEDDED_SOURCE_B64 = """{embedded_b64}"""
 
+# Embedded LightGBM LambdaMART meta-ranker model
+EMBEDDED_MODEL_B64 = """{embedded_model_b64}"""
+
 
 def _bootstrap_source(target_dir: Path | None = None) -> Path:
-    """Extract embedded source archive to target directory and insert into sys.path."""
+    """Extract embedded source archive and model to target directory and insert into sys.path."""
     if target_dir is None:
         target_dir = Path.cwd() / ".kaggle_bundle_src"
     target_dir = Path(target_dir)
@@ -313,6 +320,10 @@ def _bootstrap_source(target_dir: Path | None = None) -> Path:
     target_str = str(target_dir.resolve())
     if target_str not in sys.path:
         sys.path.insert(0, target_str)
+    if EMBEDDED_MODEL_B64.strip():
+        model_path = target_dir / "meta_ranker.txt"
+        if not model_path.exists():
+            model_path.write_bytes(base64.b64decode(EMBEDDED_MODEL_B64.strip()))
     return target_dir
 
 
@@ -551,8 +562,22 @@ def build_kaggle_kernel(
 
     b64_str = base64.b64encode(buf.getvalue()).decode("ascii")
 
+    # Embed trained LightGBM LambdaMART meta-ranker model if present
+    model_b64_str = ""
+    candidate_model_locations = [
+        src_path.parent / "models" / "meta_ranker.txt",
+        Path.cwd() / "models" / "meta_ranker.txt",
+    ]
+    for mloc in candidate_model_locations:
+        if mloc.is_file():
+            model_b64_str = base64.b64encode(mloc.read_bytes()).decode("ascii")
+            break
+
     # Format kernel script
-    kernel_code = KERNEL_TEMPLATE.format(embedded_b64=b64_str)
+    kernel_code = KERNEL_TEMPLATE.format(
+        embedded_b64=b64_str,
+        embedded_model_b64=model_b64_str,
+    )
 
     # Validate Python syntax via AST
     try:
