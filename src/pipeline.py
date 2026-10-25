@@ -21,6 +21,7 @@ from src.retrieval.transductive_networking import (
     TransductiveMolecularNetwork,
 )
 from src.reranking.meta_ranker import GBDTMetaRanker
+from src.reranking.botanical_substructures import BotanicalSubstructureScorer
 from src.reranking.slot_optimizer import DecisionTheoreticSlotOptimizer
 from src.submission.writer import (
     DEFAULT_FALLBACK_SMILES,
@@ -238,6 +239,7 @@ class CASMIOmegaPipeline:
             else GBDTMetaRanker()
         )
         self.slot_optimizer = DecisionTheoreticSlotOptimizer(fallback_pool=self.fallback_pool)
+        self.botanical_scorer = BotanicalSubstructureScorer()
         self.governor = DynamicRuntimeGovernor(total_budget_seconds=governor_budget_seconds, reserve_seconds=480.0)
 
     def _format_row(
@@ -245,6 +247,7 @@ class CASMIOmegaPipeline:
     ) -> Dict[str, str]:
         """Format 25 ranked candidate slots as InChIKey14 or SMILES row using MMR portfolio optimization."""
         slots = self.slot_optimizer.allocate_25_slots(ranked, diversity_lambda=0.88)
+        slots = [s for s in slots if "+" not in str(s)]
         if fmt == "inchikey14":
             return {"id": spec_id, "candidates": ";".join(slots)}
         else:
@@ -256,14 +259,14 @@ class CASMIOmegaPipeline:
             for cand in ranked:
                 s = cand.get("smiles")
                 ik = cand.get("inchikey14")
-                if s and ik and ik not in ik_to_smi:
+                if s and ik and "+" not in str(s) and "+" not in str(ik) and ik not in ik_to_smi:
                     ik_to_smi[ik] = s
 
             # Match SMILES from MMR slots
             for ik in slots:
                 if ik in ik_to_smi:
                     s_clean = ik_to_smi[ik].strip()
-                    if not any(ch in s_clean for ch in (" ", "\t", "\n", "\r", ",")):
+                    if not any(ch in s_clean for ch in (" ", "\t", "\n", "\r", ",", "+")):
                         try:
                             from rdkit import Chem
                             if Chem.MolFromSmiles(s_clean) is not None and s_clean not in seen_smiles:
@@ -281,7 +284,7 @@ class CASMIOmegaPipeline:
                     s = cand.get("smiles")
                     if s and isinstance(s, str) and s.strip():
                         s_clean = s.strip()
-                        if any(ch in s_clean for ch in (" ", "\t", "\n", "\r", ",")):
+                        if any(ch in s_clean for ch in (" ", "\t", "\n", "\r", ",", "+")):
                             continue
                         if s_clean in seen_smiles:
                             continue
@@ -630,12 +633,14 @@ class CASMIOmegaPipeline:
             knapsack_cands = []
             if self.fragment_library:
                 try:
-                    from src.reranking.fragment_library import KnapsackAssembler
-                    knapsack_cands = KnapsackAssembler().assemble(
+                    from src.reranking.fragment_library import KnapsackAssembler, purge_mixtures
+                    raw_knap_cands = KnapsackAssembler().assemble(
                         target_mass_da=neutral_mass,
                         library=self.fragment_library,
                         timeout_s=2.0,
+                        filter_mixtures=True,
                     )
+                    knapsack_cands = purge_mixtures(raw_knap_cands)
                 except Exception:
                     knapsack_cands = []
 
@@ -677,6 +682,8 @@ class CASMIOmegaPipeline:
                 cand_str = str(c_str).strip()
                 if not cand_str:
                     continue
+                if "+" in cand_str:
+                    continue
                 if len(cand_str) == 14 and cand_str.isalnum():
                     ik14 = cand_str
                 else:
@@ -691,6 +698,12 @@ class CASMIOmegaPipeline:
                     "score": 0.3,
                     "source": "track_knapsack",
                 })
+
+            # Discard any candidate string containing '+' (disconnected mixtures must NEVER enter candidate pools)
+            aggregated_cands = [
+                c for c in aggregated_cands
+                if "+" not in str(c.get("smiles", "")) and "+" not in str(c.get("inchikey14", ""))
+            ]
 
             self.last_aggregated_cands = list(aggregated_cands)
             self.all_aggregated_cands[spec_id] = list(aggregated_cands)
@@ -724,7 +737,9 @@ class CASMIOmegaPipeline:
                 cand_abs_da = 0.001
                 np_score = 1.0
                 cand_frag_ratio = shared_frag_ratio
+                bot_score = 0.5
                 smi = c.get("smiles")
+                m = None
                 if smi and isinstance(smi, str):
                     try:
                         from rdkit.Chem.Descriptors import ExactMolWt
@@ -746,12 +761,32 @@ class CASMIOmegaPipeline:
                     except Exception:
                         pass
 
+                if m is not None and hasattr(self, "botanical_scorer"):
+                    try:
+                        bot_score = self.botanical_scorer.score_candidate(m, fused_peaks, neutral_mass)
+                    except Exception:
+                        bot_score = 0.5
+                elif smi and hasattr(self, "botanical_scorer"):
+                    try:
+                        bot_score = self.botanical_scorer.score_candidate(smi, fused_peaks, neutral_mass)
+                    except Exception:
+                        bot_score = 0.5
+
+                # Downweight synthetic distractors
+                if bot_score <= 0.15:
+                    np_score = min(np_score, 0.1)
+
+                # Blend bot_score into cand_frag_ratio and mist_tanimoto
+                cand_frag_ratio = float(np.clip(0.40 * cand_frag_ratio + 0.60 * bot_score, 0.001, 0.999))
+                base_mist = cand_frag_ratio if "db" in c["source"] else c.get("score", 0.5)
+                blended_mist = float(np.clip(0.40 * base_mist + 0.60 * bot_score, 0.001, 0.999))
+
                 ik_key = c.get("inchikey14", "")
                 agreed_count = len(track_counts.get(ik_key, {c.get("source", "unknown")}))
 
                 feat = self.meta_ranker.extract_feature_vector(
                     dreams_cosine=c["score"] if "dreams" in c["source"] else 0.5,
-                    mist_tanimoto=cand_frag_ratio if "db" in c["source"] else c.get("score", 0.5),
+                    mist_tanimoto=blended_mist,
                     ppm_error=cand_ppm,
                     abs_da_error=cand_abs_da,
                     fragment_match_ratio=cand_frag_ratio,
@@ -761,6 +796,7 @@ class CASMIOmegaPipeline:
                     formula_rank=1,
                     source_track=c["source"],
                     neutral_loss_match_count=shared_nl_matches,
+                    composite_prior_confidence=bot_score,
                 )
                 cand_entry = {"inchikey14": c["inchikey14"], "features": feat}
                 if c.get("smiles"):

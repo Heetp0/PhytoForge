@@ -495,6 +495,11 @@ class NeutralLossLibrary:
         return [k for k in sorted(self.library.keys()) if min_k <= k <= max_k]
 
 
+def purge_mixtures(candidates: List[str]) -> List[str]:
+    """Purge any candidate strings containing '+' disconnected mixture indicators."""
+    return [c for c in candidates if "+" not in str(c)]
+
+
 class KnapsackAssembler:
     """
     Meet-in-the-Middle combinatorial fragment assembler with strict governor guards.
@@ -512,6 +517,7 @@ class KnapsackAssembler:
         max_depth: int = 3,
         max_candidates: int = 25,
         timeout_s: float = 2.0,
+        filter_mixtures: bool = False,
     ) -> List[str]:
         """
         Assemble fragment combinations from library matching target mass within tolerance.
@@ -523,6 +529,7 @@ class KnapsackAssembler:
             max_depth: Maximum combination depth (1, 2, or 3).
             max_candidates: Maximum number of deduplicated candidates to return.
             timeout_s: Maximum execution wall-clock seconds before early termination.
+            filter_mixtures: If True, disallow and discard any disconnected '+' mixture candidates.
 
         Returns:
             Deduplicated list of candidate strings (e.g. 'frag1', 'frag1+frag2').
@@ -558,7 +565,11 @@ class KnapsackAssembler:
 
         def add_candidate(parts: List[str]) -> bool:
             """Adds candidate to output if new; returns True if max_candidates reached."""
+            if filter_mixtures and len(parts) > 1:
+                return False
             cand_str = "+".join(sorted(parts))
+            if filter_mixtures and "+" in cand_str:
+                return False
             if cand_str not in seen:
                 seen.add(cand_str)
                 candidates.append(cand_str)
