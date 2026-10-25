@@ -135,6 +135,9 @@ class ExactMassFormulaIndex:
         self.formulas: List[str] = []
         self.masses: np.ndarray = np.empty(0, dtype=np.float64)
         self.carbon_counts: np.ndarray = np.empty(0, dtype=np.int32)
+        self.has_cl: np.ndarray = np.empty(0, dtype=bool)
+        self.has_br: np.ndarray = np.empty(0, dtype=bool)
+        self.has_f: np.ndarray = np.empty(0, dtype=bool)
 
         if formulas is not None:
             self._build_index(formulas)
@@ -182,14 +185,24 @@ class ExactMassFormulaIndex:
         n = len(clean_forms)
         masses = np.zeros(n, dtype=np.float64)
         carbons = np.zeros(n, dtype=np.int32)
+        has_cl = np.zeros(n, dtype=bool)
+        has_br = np.zeros(n, dtype=bool)
+        has_f = np.zeros(n, dtype=bool)
 
         for i, f in enumerate(clean_forms):
             masses[i] = self.compute_formula_mass(f)
             c_matches = self.CARBON_PATTERN.findall(f)
             carbons[i] = sum(int(x or 1) for x in c_matches) if c_matches else 0
+            elems = {el for el, _ in self.PATTERN.findall(f)}
+            has_cl[i] = "Cl" in elems
+            has_br[i] = "Br" in elems
+            has_f[i] = "F" in elems
 
         self.masses = masses
         self.carbon_counts = carbons
+        self.has_cl = has_cl
+        self.has_br = has_br
+        self.has_f = has_f
 
     def find_formulas_by_mass(
         self,
@@ -197,10 +210,12 @@ class ExactMassFormulaIndex:
         tolerance_ppm: float = 20.0,
         target_carbon_estimate: Optional[float] = None,
         max_results: int = 8,
+        has_chlorine: bool = False,
+        has_bromine: bool = False,
     ) -> List[Tuple[str, float]]:
         """Search formulas matching target monoisotopic mass within tolerance_ppm.
         
-        Optionally uses target_carbon_estimate from [M+1] isotope ratio to prioritize formulas.
+        Optionally uses target_carbon_estimate and isotope-based halogen detection to prioritize formulas.
         Returns List of (formula_str, confidence_prior) tuples.
         """
         if len(self.masses) == 0 or target_mass <= 0:
@@ -213,8 +228,21 @@ class ExactMassFormulaIndex:
         if len(matching_indices) == 0:
             return []
 
+        # Natural product halogen exclusion filter
+        filtered_indices = matching_indices
+        if not has_chlorine and self.has_cl.size == len(self.formulas):
+            filtered_indices = filtered_indices[~self.has_cl[filtered_indices]]
+        if not has_bromine and self.has_br.size == len(self.formulas):
+            filtered_indices = filtered_indices[~self.has_br[filtered_indices]]
+        if not has_chlorine and not has_bromine and self.has_f.size == len(self.formulas):
+            filtered_indices = filtered_indices[~self.has_f[filtered_indices]]
+
+        # Fallback to unfiltered matching if halogen filtering eliminates all candidates
+        if len(filtered_indices) == 0:
+            filtered_indices = matching_indices
+
         matched_items = []
-        for idx in matching_indices:
+        for idx in filtered_indices:
             f = self.formulas[idx]
             da_diff = diffs[idx]
             ppm_diff = (da_diff / target_mass) * 1e6

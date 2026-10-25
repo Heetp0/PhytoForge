@@ -391,6 +391,12 @@ def run_kaggle_pipeline(
         except Exception:
             frag_lib = None
 
+    db_name = resolved_db.name if resolved_db else "none"
+    idx_name = resolved_index.name if resolved_index else "none"
+    fl_status = "loaded" if frag_lib is not None else "none"
+    rk_name = resolved_ranker.name if resolved_ranker else "none"
+    print(">>> Resolved assets: DB=" + str(db_name) + ", Index=" + str(idx_name) + ", FragLib=" + str(fl_status) + ", Ranker=" + str(rk_name))
+
     with CASMIOmegaPipeline(
         db_path=resolved_db,
         spectral_index_path=resolved_index,

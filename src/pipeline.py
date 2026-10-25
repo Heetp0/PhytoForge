@@ -6,6 +6,7 @@ import pandas as pd
 
 from src.chemistry.adducts import (
     calculate_canonical_neutral_mass,
+    detect_halogen_presence_from_isotope_cluster,
     estimate_carbon_count_from_isotope_cluster,
     get_adduct_info,
     get_multihypothesis_precursor_candidates,
@@ -489,13 +490,16 @@ class CASMIOmegaPipeline:
                 # In-memory mock/unit test mode: prioritize formulas configured in self.db
                 formula_priors = [(f, 1.0 / (i + 1)) for i, f in enumerate(self.db.keys())]
             else:
-                # Production mode: estimate formula using ExactMassFormulaIndex and [M+1] carbon isotope count
+                # Production mode: estimate formula using ExactMassFormulaIndex and [M+1]/[M+2] isotope cluster
                 c_est = estimate_carbon_count_from_isotope_cluster(precursor_mz, fused_peaks)
+                has_cl, has_br, _ = detect_halogen_presence_from_isotope_cluster(precursor_mz, fused_peaks)
                 matched_formulas = self.exact_formula_index.find_formulas_by_mass(
                     target_mass=neutral_mass,
                     tolerance_ppm=20.0,
                     target_carbon_estimate=c_est,
                     max_results=6,
+                    has_chlorine=has_cl,
+                    has_bromine=has_br,
                 )
                 if matched_formulas:
                     formula_priors = matched_formulas
@@ -707,7 +711,7 @@ class CASMIOmegaPipeline:
 
                 feat = self.meta_ranker.extract_feature_vector(
                     dreams_cosine=c["score"] if "dreams" in c["source"] else 0.5,
-                    mist_tanimoto=c["score"] if "db" in c["source"] else 0.5,
+                    mist_tanimoto=cand_frag_ratio if "db" in c["source"] else c.get("score", 0.5),
                     ppm_error=cand_ppm,
                     abs_da_error=cand_abs_da,
                     fragment_match_ratio=cand_frag_ratio,

@@ -429,3 +429,55 @@ def estimate_carbon_count_from_isotope_cluster(
     if 3.0 <= est_c <= 120.0:
         return float(est_c)
     return None
+
+
+def detect_halogen_presence_from_isotope_cluster(
+    precursor_mz: float,
+    peaks: Optional[np.ndarray],
+    tolerance_da: float = 0.03,
+) -> Tuple[bool, bool, float]:
+    """
+    Detects whether Chlorine or Bromine is present based on the [M+2] isotope ratio.
+
+    Chlorine (35Cl:37Cl = 3:1) generates an [M+2] peak at ~32% of [M0].
+    Bromine (79Br:81Br = 1:1) generates an [M+2] peak at ~100% of [M0].
+    Pure organic natural products (C, H, N, O, P, S) have [M+2] < 15%.
+
+    Returns:
+        (has_chlorine, has_bromine, m2_ratio)
+    """
+    if peaks is None or len(peaks) == 0:
+        return False, False, 0.0
+    if not isinstance(peaks, np.ndarray) or peaks.ndim != 2 or peaks.shape[1] < 2:
+        return False, False, 0.0
+
+    mzs = peaks[:, 0]
+    ints = peaks[:, 1]
+
+    # Find M0 peak
+    m0_diffs = np.abs(mzs - precursor_mz)
+    m0_cand_idx = np.where(m0_diffs <= tolerance_da)[0]
+    if len(m0_cand_idx) == 0:
+        return False, False, 0.0
+
+    best_m0_idx = m0_cand_idx[np.argmin(m0_diffs[m0_cand_idx])]
+    i_m0 = float(ints[best_m0_idx])
+    if i_m0 < 0.01:
+        return False, False, 0.0
+
+    # Find [M+2] peak near precursor_mz + 1.9970 Da
+    target_m2 = precursor_mz + 1.9970
+    m2_diffs = np.abs(mzs - target_m2)
+    m2_cand_idx = np.where(m2_diffs <= tolerance_da)[0]
+    if len(m2_cand_idx) == 0:
+        return False, False, 0.0
+
+    best_m2_idx = m2_cand_idx[np.argmin(m2_diffs[m2_cand_idx])]
+    i_m2 = float(ints[best_m2_idx])
+    m2_ratio = i_m2 / i_m0
+
+    has_br = m2_ratio >= 0.70
+    has_cl = (m2_ratio >= 0.22) and not has_br
+
+    return has_cl, has_br, float(m2_ratio)
+
