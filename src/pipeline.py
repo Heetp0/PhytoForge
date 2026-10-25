@@ -472,6 +472,7 @@ class CASMIOmegaPipeline:
 
             fused_emb = self.fusion_engine.fuse_embeddings(frames) if frames else np.ones(1024, dtype=np.float32) / np.sqrt(1024)
             fused_peaks = fuse_peaks(frames) if frames else np.zeros((0, 2), dtype=np.float64)
+            has_cl, has_br, _ = detect_halogen_presence_from_isotope_cluster(precursor_mz, fused_peaks)
 
             # Module 2: MIST-CF soft formula routing
             # Priority: use molecular_formula from parquet row, fall back to mass-based estimate
@@ -492,7 +493,6 @@ class CASMIOmegaPipeline:
             else:
                 # Production mode: estimate formula using ExactMassFormulaIndex and [M+1]/[M+2] isotope cluster
                 c_est = estimate_carbon_count_from_isotope_cluster(precursor_mz, fused_peaks)
-                has_cl, has_br, _ = detect_halogen_presence_from_isotope_cluster(precursor_mz, fused_peaks)
                 matched_formulas = self.exact_formula_index.find_formulas_by_mass(
                     target_mass=neutral_mass,
                     tolerance_ppm=20.0,
@@ -551,23 +551,63 @@ class CASMIOmegaPipeline:
             )
 
             # Multi-adduct hypothesis expansion when primary formula retrieval yields sparse candidates (< 5)
-            if len(track2_cands) < 5 and len(hypotheses) > 1:
+            # or when primary candidate spectral matches are low (max(score) < 0.20)
+            needs_adduct_fallback = (len(track2_cands) < 5) or (
+                len(track2_cands) > 0
+                and max((float(getattr(c, "tanimoto_score", 0.0)) for c in track2_cands), default=0.0) < 0.20
+            )
+            if needs_adduct_fallback:
+                fallback_backup = [c for c in track2_cands if getattr(c, "source_tier", "") == "track2_fallback"]
+                if fallback_backup and len(fallback_backup) == len(track2_cands):
+                    track2_cands = []
                 existing_iks = {c.inchikey14 for c in track2_cands}
-                for hyp in hypotheses[1:3]:
-                    hyp_mass = hyp[0]
+
+                is_negative = polarity in ("negative", "-", "neg") or polarity.startswith("neg") or polarity == "-"
+                if is_negative:
+                    secondary_adducts = [
+                        ("[M+HCOO]-", precursor_mz - 44.998201),
+                        ("[M+Cl]-", precursor_mz - 34.969402),
+                        ("[M-H2O-H]-", precursor_mz + 19.01784),
+                    ]
+                else:
+                    secondary_adducts = [
+                        ("[M+Na]+", precursor_mz - 22.989218),
+                        ("[M+NH4]+", precursor_mz - 18.033823),
+                        ("[M-H2O+H]+", precursor_mz + 17.00328),
+                    ]
+
+                for _adduct_name, sec_neutral in secondary_adducts:
+                    if len(track2_cands) >= 25:
+                        break
+                    if sec_neutral <= 50.0:
+                        continue
                     try:
-                        _nc = max(1, round(hyp_mass / 19.0))
-                        _nh = max(1, round(_nc * 1.4))
-                        _no = max(0, round(_nc * 0.35))
-                        _guessed = f"C{_nc}H{_nh}" + (f"O{_no}" if _no > 0 else "")
-                        sec_routing = self.formula_router.route_formula_distribution([(_guessed, 0.5)])
-                        sec_cands = self.db_searcher.search_formulas(formulas=sec_routing.formulas, query_fp=db_query_fp)
-                        for sc in sec_cands:
-                            if sc.inchikey14 not in existing_iks:
-                                track2_cands.append(sc)
-                                existing_iks.add(sc.inchikey14)
+                        sec_forms = self.exact_formula_index.find_formulas_by_mass(
+                            target_mass=sec_neutral,
+                            tolerance_ppm=25.0,
+                            has_chlorine=has_cl,
+                            has_bromine=has_br,
+                        )
+                        if sec_forms:
+                            sec_cands = self.db_searcher.search_formulas(
+                                formulas=[f for f, _ in sec_forms],
+                                query_fp=db_query_fp,
+                            )
+                            for sc in sec_cands:
+                                if getattr(sc, "source_tier", "") == "track2_fallback":
+                                    continue
+                                if sc.inchikey14 not in existing_iks:
+                                    track2_cands.append(sc)
+                                    existing_iks.add(sc.inchikey14)
+                                    if len(track2_cands) >= 25:
+                                        break
                     except Exception:
                         pass
+
+                if not track2_cands and fallback_backup:
+                    track2_cands = fallback_backup
+                elif track2_cands:
+                    track2_cands.sort(key=lambda x: getattr(x, "tanimoto_score", 0.0), reverse=True)
 
             # Track 3: Latency-bounded de novo sampling (conditioned on remaining per-spec budget)
             track3_timeout = min(per_spec_budget, 10.0)
