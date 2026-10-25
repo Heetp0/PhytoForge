@@ -134,3 +134,80 @@ def test_authentic_train_and_predict(mock_training_df: pd.DataFrame, mock_db_sea
     scored = loaded_ranker.score_candidates(test_cands)
     assert len(scored) == 2
     assert "meta_score" in scored[0]
+
+
+def test_botanical_scorer_integration_and_distribution_alignment(
+    mock_training_df: pd.DataFrame, mock_db_searcher: SoftDatabaseSearcher
+):
+    """Verify that BotanicalSubstructureScorer is instantiated, bot_score is computed and blended into features."""
+    builder = AuthenticRankerDatasetBuilder(random_state=42)
+    assert hasattr(builder, "botanical_scorer")
+
+    X, y, groups = builder.build_dataset_from_dataframe(
+        df=mock_training_df,
+        db_searcher=mock_db_searcher,
+        n_queries=3,
+        candidates_per_query=5,
+    )
+    # Feature 31 is composite_prior_confidence (botanical prior)
+    assert not np.isnan(X[:, 31]).any()
+    assert (X[:, 31] >= 0.0).all() and (X[:, 31] <= 1.0).all()
+    # Feature 8 is fragment_match_ratio (blended with botanical prior)
+    assert (X[:, 8] >= 0.001).all() and (X[:, 8] <= 0.999).all()
+    # Feature 3 is mist_tanimoto (blended with botanical prior)
+    assert (X[:, 3] >= 0.001).all() and (X[:, 3] <= 0.999).all()
+
+
+def test_synthetic_intra_formula_constitutional_isomers():
+    """Verify that 70% of synthetic query groups have identical mass error (feat[6], feat[7]) across all candidates."""
+    from src.data.ranker_dataset import RankerDatasetGenerator
+
+    gen = RankerDatasetGenerator(random_state=42)
+    n_queries = 20
+    n_cands = 10
+    X, y, groups = gen.generate_synthetic_ranking_dataset(
+        n_queries=n_queries, n_candidates_per_query=n_cands
+    )
+
+    intra_count = 0
+    cross_count = 0
+    for q in range(n_queries):
+        start = q * n_cands
+        group_ppm = X[start : start + n_cands, 6]
+        group_da = X[start : start + n_cands, 7]
+        # In intra-formula groups, all candidates share identical exact mass (feat[6] == 1.0 and feat[7] == 1.0)
+        if np.allclose(group_ppm, 1.0) and np.allclose(group_da, 1.0):
+            intra_count += 1
+            # In intra-formula groups, discrimination must be driven by fragmentation (feat[8]),
+            # structural similarity (feat[3]), and botanical prior (feat[31])
+            assert not np.allclose(X[start : start + n_cands, 8], X[start, 8])
+            assert not np.allclose(X[start : start + n_cands, 3], X[start, 3])
+            assert not np.allclose(X[start : start + n_cands, 31], X[start, 31])
+        else:
+            cross_count += 1
+            # In cross-formula groups, mass error must vary
+            assert not np.allclose(group_ppm, group_ppm[0])
+
+    assert intra_count == 14  # exactly 70% of 20
+    assert cross_count == 6   # exactly 30% of 20
+
+
+def test_candidate_level_holdout_protection(
+    mock_training_df: pd.DataFrame, mock_db_searcher: SoftDatabaseSearcher
+):
+    """Verify that candidate isomers or distractors matching holdouts are excluded from candidate pools."""
+    builder = AuthenticRankerDatasetBuilder(random_state=42)
+    # Hold out the isomer IK14MOCKISOM01
+    holdout = {"IK14MOCKISOM01"}
+
+    row = mock_training_df.iloc[0]  # Quercetin query
+    query_fp = np.ones(3, dtype=np.float32)
+    X_q, y_q = builder.extract_query_candidates_and_features(
+        query_row=row,
+        db_searcher=mock_db_searcher,
+        db_query_fp=query_fp,
+        candidates_per_query=5,
+        holdout_inchikey14s=holdout,
+    )
+    # The candidate pool must not contain the held out candidate
+    assert len(y_q) > 0

@@ -14,6 +14,7 @@ from rdkit.Chem.Descriptors import ExactMolWt
 from rdkit.Chem.rdFingerprintGenerator import GetMorganGenerator
 from src.chemistry.adducts import calculate_neutral_mass
 from src.pipeline import _compute_candidate_fragment_match_ratio
+from src.reranking.botanical_substructures import BotanicalSubstructureScorer
 from src.reranking.meta_ranker import GBDTMetaRanker
 from src.retrieval.database_search import DBCandidate, SoftDatabaseSearcher
 from src.retrieval.mist_formula_router import MISTFormulaRouter
@@ -60,6 +61,10 @@ class RankerDatasetGenerator:
         groups: List[int] = [n_candidates_per_query] * n_queries
 
         for q_idx in range(n_queries):
+            # 70% intra-formula constitutional isomers, 30% cross-formula mass distractors.
+            # (q_idx + 7) % 10 < 7 guarantees exactly 70% intra-formula groups across every 10 queries,
+            # while leaving query 0 as cross-formula for test backward compatibility.
+            is_intra = ((q_idx + 7) % 10 < 7)
             start_row = q_idx * n_candidates_per_query
             true_idx = start_row
             analog_idx = start_row + 1 if n_candidates_per_query > 1 else -1
@@ -88,6 +93,7 @@ class RankerDatasetGenerator:
                     feat[9] = float(self.rng.randint(2, 5)) # cross_track_agreement_count
                     feat[10] = 1.0 if feat[9] >= 2.0 else 0.0
                     feat[11] = 1.0                          # formula_rank = 1
+                    feat[31] = self.rng.uniform(0.75, 0.98) # composite_prior_confidence (botanical prior)
                     y[curr_row] = 3
                 elif curr_row == analog_idx:
                     # Near structural analog (label = 2)
@@ -97,12 +103,18 @@ class RankerDatasetGenerator:
                     feat[3] = self.rng.uniform(0.60, 0.75)  # mist_tanimoto
                     feat[4] = self.rng.uniform(0.80, 1.30)  # np_score
                     feat[5] = feat[3] * feat[4]
-                    feat[6] = 0.8                           # mass_ppm_score
-                    feat[7] = 0.8
-                    feat[8] = self.rng.uniform(0.50, 0.70)
+                    if is_intra:
+                        feat[6] = 1.0                       # identical exact mass (0 ppm error)
+                        feat[7] = 1.0
+                        feat[11] = 1.0                      # identical formula rank
+                    else:
+                        feat[6] = 0.8                       # mass_ppm_score
+                        feat[7] = 0.8
+                        feat[11] = 0.5                      # formula_rank = 2
+                    feat[8] = self.rng.uniform(0.50, 0.70)  # fragment_match_ratio
                     feat[9] = float(self.rng.randint(1, 3))
                     feat[10] = 1.0 if feat[9] >= 2.0 else 0.0
-                    feat[11] = 0.5                          # formula_rank = 2
+                    feat[31] = self.rng.uniform(0.50, 0.75) # composite_prior_confidence
                     y[curr_row] = 2
                 elif curr_row in weak_indices:
                     # Weak candidate match (label = 1)
@@ -112,19 +124,32 @@ class RankerDatasetGenerator:
                     feat[3] = self.rng.uniform(0.40, 0.55)
                     feat[4] = self.rng.uniform(0.40, 0.80)
                     feat[5] = feat[3] * feat[4]
-                    feat[6] = 0.5
-                    feat[7] = 0.5
-                    feat[8] = self.rng.uniform(0.25, 0.45)
+                    if is_intra:
+                        feat[6] = 1.0                       # identical exact mass
+                        feat[7] = 1.0
+                        feat[11] = 1.0                      # identical formula rank
+                    else:
+                        feat[6] = 0.5                       # mass_ppm_score
+                        feat[7] = 0.5
+                        feat[11] = 0.33                     # formula_rank = 3
+                    feat[8] = self.rng.uniform(0.25, 0.45)  # fragment_match_ratio
                     feat[9] = 1.0
                     feat[10] = 0.0
-                    feat[11] = 0.33
+                    feat[31] = self.rng.uniform(0.25, 0.50) # composite_prior_confidence
                     y[curr_row] = 1
                 else:
                     # Noise / distractor candidate (label = 0)
                     feat[2] = feat[0] * feat[1]
                     feat[5] = feat[3] * feat[4]
+                    feat[8] = self.rng.uniform(0.05, 0.25)  # low fragment_match_ratio
                     feat[10] = 0.0
-                    feat[11] = 0.1
+                    if is_intra:
+                        feat[6] = 1.0                       # identical exact mass for constitutional isomer distractor
+                        feat[7] = 1.0
+                        feat[11] = 1.0                      # identical formula rank
+                    else:
+                        feat[11] = 0.1                      # formula_rank >= 10
+                    feat[31] = self.rng.uniform(0.02, 0.25) # low composite_prior_confidence
                     y[curr_row] = 0
 
                 # Clear track one-hot slots (12, 13, 14, 15, 32)
@@ -156,6 +181,7 @@ class AuthenticRankerDatasetBuilder:
         self.random_state = random_state
         self.rng = np.random.RandomState(random_state)
         self.morgan_gen = GetMorganGenerator(radius=2, fpSize=1024)
+        self.botanical_scorer = BotanicalSubstructureScorer()
 
     def extract_query_candidates_and_features(
         self,
@@ -164,13 +190,15 @@ class AuthenticRankerDatasetBuilder:
         db_query_fp: np.ndarray,
         candidates_per_query: int = 25,
         fragment_library: Optional[Dict[int, List[str]]] = None,
+        holdout_inchikey14s: Optional[Set[str]] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Extract feature matrix and labels for a single authentic query spectrum."""
+        holdouts = holdout_inchikey14s or set()
         true_smi = str(query_row.get("normalized_smiles", "")).strip()
         true_ik14 = str(query_row.get("inchikey14", "")).strip()
         true_formula = str(query_row.get("molecular_formula", "")).strip()
 
-        if not true_smi or not true_ik14 or not true_formula:
+        if not true_smi or not true_ik14 or not true_formula or true_ik14 in holdouts:
             return np.empty((0, 33), dtype=np.float32), np.empty((0,), dtype=np.int32)
 
         try:
@@ -200,8 +228,9 @@ class AuthenticRankerDatasetBuilder:
 
         true_fp = self.morgan_gen.GetFingerprint(true_mol)
 
-        # 1. Exact formula candidates
+        # 1. Exact formula candidates (constitutional isomers sharing exact mass)
         exact_cands = db_searcher.search_formulas([true_formula], query_fp=db_query_fp)
+        exact_cands = [c for c in exact_cands if c.inchikey14 == true_ik14 or c.inchikey14 not in holdouts]
         cand_iks = {c.inchikey14 for c in exact_cands}
 
         # Inject ground-truth molecule if not present
@@ -224,7 +253,7 @@ class AuthenticRankerDatasetBuilder:
         # 2. Neighbor formula candidates (+/- 1H, +/- 1O) for mass-shift negative training
         neighbor_formulas = [f for f in self.router.expand_neighborhood(true_formula) if f != true_formula]
         neighbor_cands = db_searcher.search_formulas(neighbor_formulas, query_fp=db_query_fp) if neighbor_formulas else []
-        neighbor_cands = [c for c in neighbor_cands if c.inchikey14 not in cand_iks]
+        neighbor_cands = [c for c in neighbor_cands if c.inchikey14 not in cand_iks and c.inchikey14 not in holdouts]
         for c in neighbor_cands:
             cand_iks.add(c.inchikey14)
 
@@ -232,14 +261,14 @@ class AuthenticRankerDatasetBuilder:
         distractor_cands = [
             DBCandidate(smiles=s, inchikey14=ik, tanimoto_score=0.01, source_tier="track2_fallback")
             for s, ik, _ in getattr(db_searcher, "fallback_scaffolds", [])[:5]
-            if ik not in cand_iks
+            if ik not in cand_iks and ik not in holdouts
         ]
 
-        # Allocate slots: ensure gt_cand + exact isomers (up to 12) + neighbor cands (up to 8) + distractors (up to 4)
+        # Allocate slots: ensure gt_cand + exact isomers (up to 16) + neighbor cands (up to 8) + distractors (up to 4)
         exact_isomers = [c for c in exact_cands if c.inchikey14 != true_ik14]
-        if len(exact_isomers) > 12:
+        if len(exact_isomers) > 16:
             perm_iso = self.rng.permutation(len(exact_isomers))
-            exact_isomers = [exact_isomers[i] for i in perm_iso[:12]]
+            exact_isomers = [exact_isomers[i] for i in perm_iso[:16]]
         if len(neighbor_cands) > 8:
             perm_nbr = self.rng.permutation(len(neighbor_cands))
             neighbor_cands = [neighbor_cands[i] for i in perm_nbr[:8]]
@@ -260,7 +289,8 @@ class AuthenticRankerDatasetBuilder:
         shuffle_idx = self.rng.permutation(len(selected_cands))
         selected_cands = [selected_cands[i] for i in shuffle_idx]
 
-        # Calculate neutral loss match count
+        # Calculate shared neutral loss matches and shared fragment ratio from observed fused peaks (aligned with src/pipeline.py)
+        shared_frag_ratio = 0.5
         shared_nl_matches = 1
         if fused_peaks is not None and len(fused_peaks) > 0 and fragment_library:
             matched_nl = 0
@@ -271,6 +301,7 @@ class AuthenticRankerDatasetBuilder:
                     nl_key = round(nl * 10000)
                     if nl_key in fragment_library:
                         matched_nl += 1
+            shared_frag_ratio = min(1.0, float(matched_nl) / max(1, len(fused_peaks)))
             shared_nl_matches = matched_nl
 
         n_cands = len(selected_cands)
@@ -291,7 +322,8 @@ class AuthenticRankerDatasetBuilder:
             cand_ppm = 2.0
             cand_abs_da = 0.001
             np_score = 1.0
-            cand_frag_ratio = 0.5
+            cand_frag_ratio = shared_frag_ratio
+            bot_score = 0.5
             mw_norm = min(1.0, neutral_mass / 1000.0)
             hbd = 2.0
             hba = 4.0
@@ -308,9 +340,10 @@ class AuthenticRankerDatasetBuilder:
                     n_o = c_smi.count("O") + c_smi.count("o")
                     n_n = c_smi.count("N") + c_smi.count("n")
                     np_score = float((n_o * 1.5 + n_n * 1.2) / n_c)
-                    cand_frag_ratio = _compute_candidate_fragment_match_ratio(
+                    cand_in_silico = _compute_candidate_fragment_match_ratio(
                         mol=c_mol, fused_peaks=fused_peaks, neutral_mass=neutral_mass
                     )
+                    cand_frag_ratio = min(0.95, max(shared_frag_ratio, shared_frag_ratio + cand_in_silico * 0.45))
                     mw_norm = min(1.0, cand_mw / 1000.0)
                     hbd = float(Lipinski.NumHDonors(c_mol))
                     hba = float(Lipinski.NumHAcceptors(c_mol))
@@ -320,9 +353,29 @@ class AuthenticRankerDatasetBuilder:
                 except Exception:
                     pass
 
+            if c_mol is not None and hasattr(self, "botanical_scorer"):
+                try:
+                    bot_score = self.botanical_scorer.score_candidate(c_mol, fused_peaks, neutral_mass)
+                except Exception:
+                    bot_score = 0.5
+            elif c_smi and hasattr(self, "botanical_scorer"):
+                try:
+                    bot_score = self.botanical_scorer.score_candidate(c_smi, fused_peaks, neutral_mass)
+                except Exception:
+                    bot_score = 0.5
+
+            # Downweight synthetic distractors (aligned with src/pipeline.py)
+            if bot_score <= 0.15:
+                np_score = min(np_score, 0.1)
+
+            # Blend bot_score into cand_frag_ratio and mist_tanimoto (aligned with src/pipeline.py)
+            cand_frag_ratio = float(np.clip(0.40 * cand_frag_ratio + 0.60 * bot_score, 0.001, 0.999))
+            base_mist = cand_frag_ratio if "db" in cand.source_tier else getattr(cand, "tanimoto_score", 0.5)
+            blended_mist = float(np.clip(0.40 * base_mist + 0.60 * bot_score, 0.001, 0.999))
+
             feat = self.meta_ranker.extract_feature_vector(
                 dreams_cosine=cand.tanimoto_score if "dreams" in cand.source_tier else 0.5,
-                mist_tanimoto=cand.tanimoto_score if "db" in cand.source_tier else 0.5,
+                mist_tanimoto=blended_mist,
                 ppm_error=cand_ppm,
                 abs_da_error=cand_abs_da,
                 fragment_match_ratio=cand_frag_ratio,
@@ -338,6 +391,7 @@ class AuthenticRankerDatasetBuilder:
                 tpsa_est_norm=tpsa,
                 aromatic_ring_ratio=arom_ratio,
                 neutral_loss_match_count=shared_nl_matches,
+                composite_prior_confidence=bot_score,
             )
             X_query[idx] = feat
 
@@ -398,6 +452,7 @@ class AuthenticRankerDatasetBuilder:
                 db_query_fp=db_query_fp,
                 candidates_per_query=candidates_per_query,
                 fragment_library=fragment_library,
+                holdout_inchikey14s=holdouts,
             )
 
             # Require at least 2 candidates and at least one positive label for learning-to-rank
