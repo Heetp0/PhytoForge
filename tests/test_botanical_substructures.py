@@ -298,3 +298,30 @@ class TestPipelineBotanicalIntegration:
         assert top_candidates[0] == "IK14QUERCETIN1"
         # Synthetic distractor must NOT be Rank 1
         assert top_candidates[0] != "IK14SULFONAMD1"
+
+
+class TestBotanicalSubstructureScorerWithoutRDKit:
+    """Verify graceful and accurate functionality when RDKit is not installed."""
+
+    def test_rdkit_absent_initialization_and_scoring(self, monkeypatch: pytest.MonkeyPatch):
+        import src.reranking.botanical_substructures as bsub
+        monkeypatch.setattr(bsub, "_RDKIT_AVAILABLE", False)
+        monkeypatch.setattr(bsub, "Chem", None)
+
+        scorer = bsub.BotanicalSubstructureScorer()
+        assert scorer._botanical_patterns == {}
+        assert scorer._distractor_patterns == {}
+
+        # Authentic flavonoid with RDA fragments
+        fused_peaks = np.array([[153.019, 100.0], [137.024, 50.0]])
+        neutral_mass = 302.042
+
+        score_flav = scorer.score_candidate(QUERCETIN, fused_peaks, neutral_mass)
+        score_sulfa = scorer.score_candidate(SULFAMETHOXAZOLE, fused_peaks, neutral_mass)
+
+        assert score_flav >= 0.85
+        assert score_sulfa <= 0.10
+        assert (score_flav - score_sulfa) >= 0.75
+
+        # Invalid SMILES returns 0.0
+        assert scorer.score_candidate("INVALID_STRING", fused_peaks, neutral_mass) == 0.0

@@ -267,14 +267,17 @@ class CASMIOmegaPipeline:
                 if ik in ik_to_smi:
                     s_clean = ik_to_smi[ik].strip()
                     if not any(ch in s_clean for ch in (" ", "\t", "\n", "\r", ",", "+")):
+                        valid = True
                         try:
                             from rdkit import Chem
-                            if Chem.MolFromSmiles(s_clean) is not None and s_clean not in seen_smiles:
-                                selected_smiles.append(s_clean)
-                                seen_smiles.add(s_clean)
-                                seen_ik14.add(ik)
+                            if Chem.MolFromSmiles(s_clean) is None:
+                                valid = False
                         except Exception:
-                            pass
+                            valid = True
+                        if valid and s_clean not in seen_smiles:
+                            selected_smiles.append(s_clean)
+                            seen_smiles.add(s_clean)
+                            seen_ik14.add(ik)
                 if len(selected_smiles) == 25:
                     break
 
@@ -288,12 +291,15 @@ class CASMIOmegaPipeline:
                             continue
                         if s_clean in seen_smiles:
                             continue
+                        valid = True
                         try:
                             from rdkit import Chem
                             if Chem.MolFromSmiles(s_clean) is None:
-                                continue
+                                valid = False
                         except Exception:
-                            pass
+                            valid = True
+                        if not valid:
+                            continue
                         cand_ik = cand.get("inchikey14") or get_inchikey14(s_clean)
                         if cand_ik and cand_ik in seen_ik14:
                             continue

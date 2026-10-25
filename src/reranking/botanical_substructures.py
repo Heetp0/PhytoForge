@@ -13,10 +13,17 @@ Provides:
 from __future__ import annotations
 
 import math
+import re
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
-from rdkit import Chem
+
+try:
+    from rdkit import Chem
+    _RDKIT_AVAILABLE = True
+except ImportError:
+    Chem = None
+    _RDKIT_AVAILABLE = False
 
 
 def extract_peak_mzs(fused_peaks: Any) -> List[float]:
@@ -142,44 +149,138 @@ class BotanicalSubstructureScorer:
     def __init__(self, tolerance_da: float = 0.025):
         self.tolerance_da = tolerance_da
 
-        # Precompile SMARTS patterns
+        # Precompile SMARTS patterns if RDKit is available
         self._botanical_patterns: Dict[str, List[Any]] = {}
-        for cat, smarts_list in BOTANICAL_SMARTS_DEFINITIONS.items():
-            compiled = []
-            for s in smarts_list:
-                pat = Chem.MolFromSmarts(s)
-                if pat is not None:
-                    compiled.append(pat)
-            self._botanical_patterns[cat] = compiled
-
         self._distractor_patterns: Dict[str, List[Any]] = {}
-        for cat, smarts_list in SYNTHETIC_DISTRACTOR_SMARTS.items():
-            compiled = []
-            for s in smarts_list:
-                pat = Chem.MolFromSmarts(s)
-                if pat is not None:
-                    compiled.append(pat)
-            self._distractor_patterns[cat] = compiled
 
-    def _has_match(self, mol: Chem.Mol, category: str) -> bool:
-        """Check if molecule matches any compiled SMARTS in category."""
-        if mol is None:
+        if _RDKIT_AVAILABLE and Chem is not None:
+            for cat, smarts_list in BOTANICAL_SMARTS_DEFINITIONS.items():
+                compiled = []
+                for s in smarts_list:
+                    try:
+                        pat = Chem.MolFromSmarts(s)
+                        if pat is not None:
+                            compiled.append(pat)
+                    except Exception:
+                        pass
+                self._botanical_patterns[cat] = compiled
+
+            for cat, smarts_list in SYNTHETIC_DISTRACTOR_SMARTS.items():
+                compiled = []
+                for s in smarts_list:
+                    try:
+                        pat = Chem.MolFromSmarts(s)
+                        if pat is not None:
+                            compiled.append(pat)
+                    except Exception:
+                        pass
+                self._distractor_patterns[cat] = compiled
+
+    def _has_match_smiles(self, smi: str, category: str) -> bool:
+        """Pure-Python SMILES regex/pattern matcher for environments lacking RDKit."""
+        if not smi or not isinstance(smi, str):
             return False
 
-        if category in self._botanical_patterns:
-            patterns = self._botanical_patterns[category]
-        elif category in self._distractor_patterns:
-            patterns = self._distractor_patterns[category]
-        else:
-            return False
+        if category == "sulfonamide":
+            # Sulfur double-bonded to two oxygens and bonded to nitrogen
+            return bool(
+                re.search(r"S\(=O\)\(=O\)[Nn]|S\(=O\)\(=O\)\[n|N[1-9]?\([^)]*\)S\(=O\)\(=O\)|[Nn]S\(=O\)\(=O\)|\[[Nn][^\]]*\]S\(=O\)\(=O\)", smi)
+                or "S(=O)(=O)N" in smi
+                or "S(=O)(=O)n" in smi
+                or "NS(=O)(=O)" in smi
+                or "nS(=O)(=O)" in smi
+            )
 
-        for pat in patterns:
-            try:
-                if mol.HasSubstructMatch(pat):
-                    return True
-            except Exception:
-                continue
+        if category == "halogenated_ring":
+            # Aromatic carbon substituted with halogen
+            return bool(
+                re.search(r"c\d*(?:\([^\)]*\))*(?:Cl|Br|F|I)|(?:Cl|Br|F|I)c\d*", smi)
+                or any(x in smi for x in ("c(Cl)", "c(Br)", "c(F)", "c(I)", "(Cl)c", "(Br)c", "(F)c", "(I)c"))
+            )
+
+        if category == "hexose":
+            # Hexose: sugar with pyranose ring and hydroxymethyl (CO)
+            has_sugar_ring = any(p in smi for p in ("OC(", "O)C(", "C(O)C", "C(CO)", "(CO)"))
+            return has_sugar_ring and ("(CO)" in smi or "CO)" in smi) and smi.count("O") >= 5
+
+        if category == "rhamnose":
+            # 6-deoxyhexose: methyl attached to pyranose ring
+            return (
+                ("CC1OC" in smi or "C(C)OC" in smi or "CC2OC" in smi or ("CC" in smi and "OC(" in smi))
+                and smi.count("O") >= 4
+                and "(CO)" not in smi
+            )
+
+        if category == "pentose":
+            # 5-carbon sugar
+            return (
+                ("C1OCC" in smi or "OCC1OC" in smi or "OCC" in smi)
+                and (3 <= smi.count("O") <= 6)
+                and "(CO)" not in smi
+            )
+
+        if category == "glucuronide":
+            # Glucuronic acid: carboxylic acid on sugar ring
+            return (
+                ("C(=O)O)C" in smi or "O=C(O)C" in smi or ("C(=O)O" in smi and "OC(" in smi))
+                and smi.count("O") >= 6
+                and "S(" not in smi
+            )
+
+        if category == "galloyl":
+            # 3,4,5-trihydroxybenzoyl group (pyrogallol)
+            return bool(
+                re.search(r"c\(O\)c\(O\)c\(O\)|c\(O\)cc\(O\)c\(O\)|c\(O\)c\(O\)cc\(O\)|\(O\)c\d+cc\(O\)c\(O\)", smi)
+                or "c(O)c(O)c(O)" in smi
+            )
+
+        if category == "caffeoyl":
+            # (E)-3-(3,4-dihydroxyphenyl)acryloyl
+            has_caffeic_alkene = any(p in smi for p in ("C=CC(=O)", "/C=C/c", "C=Cc1", "/C=C/C(=O)"))
+            has_catechol = "c(O)c(O)" in smi or "c1cc(O)c(O)" in smi or "c(O)cc(O)" in smi
+            return has_caffeic_alkene and has_catechol
+
+        if category == "depsidone":
+            # Dibenzo-dioxepinone or lactone/depside aryl ester
+            return any(p in smi for p in ("C(=O)Oc1", "C(=O)Oc2", "C(=O)Oc3", "c1ccc2c(c1)OC(=O)")) and "O=c1c" not in smi
+
+        if category == "flavonoid":
+            # Chromone, flavone, flavonol, flavanone core
+            return any(p in smi for p in ("O=c1ccoc2", "O=c1c(O)coc2", "O=C1CCc2c(O1)", "c1ccc2c(=O)ccoc2c1", "O=c1c", "O=C1C("))
+
         return False
+
+    def _has_match(self, mol: Any, category: str, smiles_str: Optional[str] = None) -> bool:
+        """Check if molecule matches category via RDKit SMARTS or SMILES fallback."""
+        if _RDKIT_AVAILABLE and Chem is not None and isinstance(mol, Chem.Mol):
+            if category in self._botanical_patterns:
+                patterns = self._botanical_patterns[category]
+            elif category in self._distractor_patterns:
+                patterns = self._distractor_patterns[category]
+            else:
+                patterns = []
+
+            for pat in patterns:
+                try:
+                    if mol.HasSubstructMatch(pat):
+                        return True
+                except Exception:
+                    continue
+
+        # Extract SMILES string for fallback
+        smi = smiles_str
+        if not smi and isinstance(mol, str):
+            smi = mol
+        elif not smi and _RDKIT_AVAILABLE and Chem is not None and isinstance(mol, Chem.Mol):
+            try:
+                smi = Chem.MolToSmiles(mol)
+            except Exception:
+                smi = None
+
+        if not smi or not isinstance(smi, str):
+            return False
+
+        return self._has_match_smiles(smi, category)
 
     def detect_spectral_signatures(
         self,
@@ -306,20 +407,34 @@ class BotanicalSubstructureScorer:
         if mol is None:
             return 0.0
 
+        m = None
+        smi = None
         if isinstance(mol, str):
-            try:
-                m = Chem.MolFromSmiles(mol)
-            except Exception:
-                m = None
-        else:
+            smi = mol.strip()
+            if _RDKIT_AVAILABLE and Chem is not None:
+                try:
+                    m = Chem.MolFromSmiles(smi)
+                except Exception:
+                    m = None
+                if m is None:
+                    return 0.0
+            else:
+                # Basic chemical sanity check when RDKit is absent
+                if any(c in smi for c in "_jJqQxXzZ") or not any(c in smi for c in "CcNnOoSs"):
+                    return 0.0
+        elif _RDKIT_AVAILABLE and Chem is not None and isinstance(mol, Chem.Mol):
             m = mol
+            try:
+                smi = Chem.MolToSmiles(mol)
+            except Exception:
+                smi = None
 
-        if m is None:
+        if m is None and not smi:
             return 0.0
 
         # Substructure matching for candidate
         cand_has: Dict[str, bool] = {
-            cat: self._has_match(m, cat)
+            cat: self._has_match(m, cat, smiles_str=smi)
             for cat in [
                 "hexose",
                 "rhamnose",

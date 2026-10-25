@@ -8,10 +8,20 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 import numpy as np
 import pandas as pd
-from rdkit import Chem, DataStructs
-from rdkit.Chem import Descriptors, Lipinski
-from rdkit.Chem.Descriptors import ExactMolWt
-from rdkit.Chem.rdFingerprintGenerator import GetMorganGenerator
+try:
+    from rdkit import Chem, DataStructs
+    from rdkit.Chem import Descriptors, Lipinski
+    from rdkit.Chem.Descriptors import ExactMolWt
+    from rdkit.Chem.rdFingerprintGenerator import GetMorganGenerator
+    _RDKIT_AVAILABLE = True
+except ImportError:
+    Chem = None
+    DataStructs = None
+    Descriptors = None
+    Lipinski = None
+    ExactMolWt = None
+    GetMorganGenerator = None
+    _RDKIT_AVAILABLE = False
 from src.chemistry.adducts import calculate_neutral_mass
 from src.pipeline import _compute_candidate_fragment_match_ratio
 from src.reranking.botanical_substructures import BotanicalSubstructureScorer
