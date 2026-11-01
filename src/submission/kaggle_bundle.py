@@ -368,8 +368,9 @@ def run_kaggle_pipeline(
             else:
                 output_format = "inchikey14"
 
-    total_specs = len(test_df)
-    total_budget = governor_limit_per_spec * total_specs if total_specs > 0 else 32400.0
+    id_col = "molecule_id" if "molecule_id" in test_df.columns else ("id" if "id" in test_df.columns else None)
+    total_specs = int(test_df[id_col].nunique()) if id_col else len(test_df)
+    total_budget = governor_limit_per_spec * len(test_df) if len(test_df) > 0 else 32400.0
 
     resolved_db = config.resolve_candidate_db()
     resolved_index = config.resolve_spectral_index()
@@ -548,8 +549,9 @@ def run_kaggle_pipeline(
             else:
                 output_format = "inchikey14"
 
-    total_specs = len(test_df)
-    total_budget = governor_limit_per_spec * total_specs if total_specs > 0 else 32400.0
+    id_col = "molecule_id" if "molecule_id" in test_df.columns else ("id" if "id" in test_df.columns else None)
+    total_specs = int(test_df[id_col].nunique()) if id_col else len(test_df)
+    total_budget = governor_limit_per_spec * len(test_df) if len(test_df) > 0 else 32400.0
 
     resolved_db = config.resolve_candidate_db()
     resolved_index = config.resolve_spectral_index()
