@@ -1,3 +1,4 @@
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Union
@@ -31,6 +32,11 @@ from src.submission.writer import (
     write_submission,
 )
 from src.submission.runtime_governor import DynamicRuntimeGovernor
+from src.submission.telemetry import (
+    format_completion,
+    format_heartbeat,
+    get_process_memory_gb,
+)
 
 
 def _compute_candidate_fragment_match_ratio(
@@ -365,10 +371,11 @@ class CASMIOmegaPipeline:
     def run(
         self,
         test_df: pd.DataFrame,
-        output_path: Union[str, Path],
-        output_format: str = "inchikey14",
+        output_path: Optional[Union[str, Path]] = None,
+        output_format: Optional[str] = "inchikey14",
     ) -> pd.DataFrame:
-        output_path = Path(output_path)
+        if output_path is not None:
+            output_path = Path(output_path)
         if output_format is None:
             output_format = "inchikey14"
         fmt = str(output_format).strip().lower()
@@ -408,17 +415,20 @@ class CASMIOmegaPipeline:
             else:
                 sub_df = pd.DataFrame(columns=["molecule_id", "smiles"])
             validate_submission(sub_df, expected_ids=expected_ids, output_format=fmt)
-            write_submission(
-                sub_df,
-                output_path=output_path,
-                expected_ids=expected_ids,
-                output_format=fmt,
-            )
+            if output_path is not None:
+                write_submission(
+                    sub_df,
+                    output_path=output_path,
+                    expected_ids=expected_ids,
+                    output_format=fmt,
+                )
             return sub_df
 
         total_items = len(item_groups)
         rows = []
         start_pipeline_time = time.perf_counter()
+        authentic_hits_count = 0
+        peak_ram_gb = get_process_memory_gb()
 
         scored_candidates_by_id: Dict[str, List[Dict[str, Any]]] = {}
 
@@ -898,6 +908,38 @@ class CASMIOmegaPipeline:
 
             rows.append(self._format_row(spec_id, ranked, fmt))
 
+            top_cand = ranked[0] if ranked else {}
+            top_cos = float(top_cand.get("score", 0.0)) if "dreams" in top_cand.get("source", "") else 0.0
+            is_r1 = "dreams" in top_cand.get("source", "") and top_cos >= 0.70
+            if is_r1:
+                authentic_hits_count += 1
+
+            cur_ram = get_process_memory_gb()
+            peak_ram_gb = max(peak_ram_gb, cur_ram)
+
+            if group_idx == 0 or group_idx % 25 == 24 or group_idx == total_items - 1:
+                try:
+                    elapsed = time.perf_counter() - start_pipeline_time
+                    items_remaining = max(0, total_items - (group_idx + 1))
+                    avg_sec = elapsed / max(group_idx + 1, 1)
+                    eta = avg_sec * items_remaining
+                    hb = format_heartbeat(
+                        idx=group_idx + 1,
+                        total=total_items,
+                        query_id=spec_id,
+                        top_cosine=top_cos,
+                        matched_adduct=adduct,
+                        is_rank1=is_r1,
+                        hits_count=authentic_hits_count,
+                        sec_per_spec=avg_sec,
+                        ram_gb=cur_ram,
+                        eta_sec=eta,
+                    )
+                    print(hb)
+                    sys.stdout.flush()
+                except Exception:
+                    pass
+
         # Post-pass transductive refinement: propagate newly solved scaffolds across test batch
         if len(item_groups) > 1 and len(self.solved_scaffolds) > 1:
             for idx, (spec_id, _) in enumerate(item_groups):
@@ -963,18 +1005,34 @@ class CASMIOmegaPipeline:
 
         # Module 6: Submission validation and atomic file writing
         validate_submission(sub_df, expected_ids=expected_ids, output_format=fmt)
-        write_submission(
-            sub_df,
-            output_path=output_path,
-            expected_ids=expected_ids,
-            output_format=fmt,
-        )
+        if output_path is not None:
+            write_submission(
+                sub_df,
+                output_path=output_path,
+                expected_ids=expected_ids,
+                output_format=fmt,
+            )
+
+        try:
+            total_pipeline_time = time.perf_counter() - start_pipeline_time
+            summary = format_completion(
+                total_queries=total_items,
+                elapsed_sec=total_pipeline_time,
+                authentic_hits=authentic_hits_count,
+                peak_ram_gb=peak_ram_gb,
+                output_path=output_path if output_path is not None else "in-memory",
+            )
+            print(summary)
+            sys.stdout.flush()
+        except Exception:
+            pass
+
         return sub_df
 
 
 def run_casmi_omega_pipeline(
     test_df: pd.DataFrame,
-    output_path: Union[str, Path],
+    output_path: Optional[Union[str, Path]] = None,
     db: Optional[Dict[str, List]] = None,
     fallback_scaffolds: Optional[List] = None,
     governor_budget_seconds: float = 32400.0,

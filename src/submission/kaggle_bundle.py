@@ -22,6 +22,15 @@ import sys
 from typing import Any, Dict, List, Optional, Union
 import zipfile
 
+from src.submission.telemetry import format_banner
+
+__all__ = [
+    "KaggleEnvironmentConfig",
+    "run_kaggle_pipeline",
+    "build_kaggle_kernel",
+    "KERNEL_TEMPLATE",
+]
+
 
 class KaggleEnvironmentConfig:
     """
@@ -202,9 +211,10 @@ class KaggleEnvironmentConfig:
                 if target.is_file():
                     return target
 
-        bootstrap_model = Path.cwd() / ".kaggle_bundle_src" / "meta_ranker.txt"
-        if bootstrap_model.is_file():
-            return bootstrap_model
+        if self.base_input_dir is None:
+            bootstrap_model = Path.cwd() / ".kaggle_bundle_src" / "meta_ranker.txt"
+            if bootstrap_model.is_file():
+                return bootstrap_model
 
         return None
 
@@ -285,58 +295,6 @@ class KaggleEnvironmentConfig:
         }
 
 
-KERNEL_TEMPLATE = '''"""
-Standalone Kaggle Submission Kernel for Enveda CASMI 2026.
-Compiled by PhytoForge Kaggle Offline Bundle Generator.
-"""
-from __future__ import annotations
-
-import argparse
-import ast
-import base64
-import io
-import os
-from pathlib import Path
-import sys
-import time
-import zipfile
-
-# Embedded source archive of PhytoForge src/ packages
-EMBEDDED_SOURCE_B64 = """{embedded_b64}"""
-
-# Embedded LightGBM LambdaMART meta-ranker model
-EMBEDDED_MODEL_B64 = """{embedded_model_b64}"""
-
-
-def _bootstrap_source(target_dir: Path | None = None) -> Path:
-    """Extract embedded source archive and model to target directory and insert into sys.path."""
-    if target_dir is None:
-        target_dir = Path.cwd() / ".kaggle_bundle_src"
-    target_dir = Path(target_dir)
-    target_dir.mkdir(parents=True, exist_ok=True)
-    raw_bytes = base64.b64decode(EMBEDDED_SOURCE_B64.strip())
-    with zipfile.ZipFile(io.BytesIO(raw_bytes)) as zf:
-        zf.extractall(target_dir)
-    target_str = str(target_dir.resolve())
-    if target_str not in sys.path:
-        sys.path.insert(0, target_str)
-    if EMBEDDED_MODEL_B64.strip():
-        model_path = target_dir / "meta_ranker.txt"
-        if not model_path.exists():
-            model_path.write_bytes(base64.b64decode(EMBEDDED_MODEL_B64.strip()))
-    return target_dir
-
-
-# Execute source bootstrap
-_bootstrap_source()
-
-import pandas as pd
-from src.pipeline import CASMIOmegaPipeline
-from src.submission.kaggle_bundle import KaggleEnvironmentConfig
-from src.submission.runtime_governor import DynamicRuntimeGovernor
-from src.submission.writer import validate_submission_file
-
-
 def run_kaggle_pipeline(
     input_path: str | Path | None = None,
     output_path: str | Path | None = None,
@@ -351,6 +309,10 @@ def run_kaggle_pipeline(
     force_kaggle: bool | None = None,
 ) -> Path:
     """Run CASMIOmegaPipeline with Kaggle asset resolution and dynamic governor."""
+    import pandas as pd
+    from src.pipeline import CASMIOmegaPipeline
+    from src.submission.writer import validate_submission_file
+
     config = KaggleEnvironmentConfig(
         candidate_db_path=db_path,
         spectral_index_path=spectral_index_path,
@@ -370,7 +332,6 @@ def run_kaggle_pipeline(
 
     resolved_output = config.resolve_submission_output()
     resolved_output.parent.mkdir(parents=True, exist_ok=True)
-    print(">>> PhytoForge v1.0.6 [Writable DB Mirror Active] - Initializing pipeline...")
 
     # Load test dataset
     if resolved_test.suffix == ".parquet":
@@ -435,7 +396,196 @@ def run_kaggle_pipeline(
     fl_status = "loaded" if frag_lib is not None else "none"
     rk_name = resolved_ranker.name if resolved_ranker else "none"
     tr_name = resolved_train.name if resolved_train else "none"
-    print(">>> Resolved assets: DB=" + str(db_name) + ", Index=" + str(idx_name) + ", FragLib=" + str(fl_status) + ", Ranker=" + str(rk_name) + ", TrainRef=" + str(tr_name))
+
+    assets_summary = {
+        "DB": db_name,
+        "Index": idx_name,
+        "FragLib": fl_status,
+        "Ranker": rk_name,
+        "TrainRef": tr_name,
+    }
+    print(format_banner(assets=assets_summary, total_queries=total_specs))
+    sys.stdout.flush()
+
+    with CASMIOmegaPipeline(
+        db_path=resolved_db,
+        spectral_index_path=resolved_index,
+        fragment_library=frag_lib,
+        meta_ranker_path=resolved_ranker,
+        train_data_path=resolved_train,
+        governor_budget_seconds=total_budget,
+    ) as pipeline:
+        pipeline.run(
+            test_df=test_df,
+            output_path=resolved_output,
+            output_format=output_format,
+        )
+
+    # Validate output submission file
+    validate_submission_file(resolved_output, output_format=output_format)
+    return resolved_output
+
+
+KERNEL_TEMPLATE = '''"""
+Standalone Kaggle Submission Kernel for Enveda CASMI 2026.
+Compiled by PhytoForge Kaggle Offline Bundle Generator.
+"""
+from __future__ import annotations
+
+import argparse
+import ast
+import base64
+import io
+import os
+from pathlib import Path
+import sys
+import time
+import zipfile
+
+# Embedded source archive of PhytoForge src/ packages
+EMBEDDED_SOURCE_B64 = """{embedded_b64}"""
+
+# Embedded LightGBM LambdaMART meta-ranker model
+EMBEDDED_MODEL_B64 = """{embedded_model_b64}"""
+
+
+def _bootstrap_source(target_dir: Path | None = None) -> Path:
+    """Extract embedded source archive and model to target directory and insert into sys.path."""
+    if target_dir is None:
+        target_dir = Path.cwd() / ".kaggle_bundle_src"
+    target_dir = Path(target_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    raw_bytes = base64.b64decode(EMBEDDED_SOURCE_B64.strip())
+    with zipfile.ZipFile(io.BytesIO(raw_bytes)) as zf:
+        zf.extractall(target_dir)
+    target_str = str(target_dir.resolve())
+    if target_str not in sys.path:
+        sys.path.insert(0, target_str)
+    if EMBEDDED_MODEL_B64.strip():
+        model_path = target_dir / "meta_ranker.txt"
+        if not model_path.exists():
+            model_path.write_bytes(base64.b64decode(EMBEDDED_MODEL_B64.strip()))
+    return target_dir
+
+
+# Execute source bootstrap
+_bootstrap_source()
+
+import pandas as pd
+from src.pipeline import CASMIOmegaPipeline
+from src.submission.kaggle_bundle import KaggleEnvironmentConfig
+from src.submission.runtime_governor import DynamicRuntimeGovernor
+from src.submission.writer import validate_submission_file
+from src.submission.telemetry import format_banner
+
+
+def run_kaggle_pipeline(
+    input_path: str | Path | None = None,
+    output_path: str | Path | None = None,
+    output_format: str | None = None,
+    db_path: str | Path | None = None,
+    spectral_index_path: str | Path | None = None,
+    fragment_library_path: str | Path | None = None,
+    meta_ranker_path: str | Path | None = None,
+    train_data_path: str | Path | None = None,
+    governor_limit_per_spec: float = 21.3,
+    governor_reserve: float = 480.0,
+    force_kaggle: bool | None = None,
+) -> Path:
+    """Run CASMIOmegaPipeline with Kaggle asset resolution and dynamic governor."""
+    config = KaggleEnvironmentConfig(
+        candidate_db_path=db_path,
+        spectral_index_path=spectral_index_path,
+        fragment_library_path=fragment_library_path,
+        meta_ranker_model_path=meta_ranker_path,
+        train_data_path=train_data_path,
+        test_data_path=input_path,
+        submission_output_path=output_path,
+        force_kaggle=force_kaggle,
+    )
+
+    resolved_test = config.resolve_test_data()
+    if resolved_test is None:
+        raise FileNotFoundError(
+            "Test data file not found. Provide --input or ensure test.parquet/test.csv is accessible."
+        )
+
+    resolved_output = config.resolve_submission_output()
+    resolved_output.parent.mkdir(parents=True, exist_ok=True)
+
+    # Load test dataset
+    if resolved_test.suffix == ".parquet":
+        test_df = pd.read_parquet(resolved_test)
+    else:
+        try:
+            test_df = pd.read_csv(resolved_test)
+        except UnicodeDecodeError:
+            test_df = pd.read_csv(resolved_test, encoding="latin-1")
+
+    # Format auto-detection if not specified
+    if output_format is None:
+        sample_sub = None
+        for root in config._get_search_roots():
+            for name in ("sample_submission.csv", "sample_sub.csv"):
+                cand = root / name
+                if cand.is_file():
+                    sample_sub = cand
+                    break
+            if sample_sub:
+                break
+        if sample_sub is not None:
+            try:
+                first_line = sample_sub.read_text(encoding="utf-8").splitlines()[0].lower()
+                if "smiles" in first_line or "molecule_id" in first_line:
+                    output_format = "smiles"
+                elif "candidates" in first_line or "inchikey" in first_line:
+                    output_format = "inchikey14"
+            except Exception:
+                pass
+        if output_format is None:
+            if "molecule_id" in test_df.columns and "id" not in test_df.columns:
+                output_format = "smiles"
+            else:
+                output_format = "inchikey14"
+
+    total_specs = len(test_df)
+    total_budget = governor_limit_per_spec * total_specs if total_specs > 0 else 32400.0
+
+    resolved_db = config.resolve_candidate_db()
+    resolved_index = config.resolve_spectral_index()
+    resolved_frag = config.resolve_fragment_library()
+    resolved_ranker = config.resolve_meta_ranker_model()
+    resolved_train = config.resolve_train_data()
+
+    frag_lib = None
+    if resolved_frag is not None:
+        try:
+            import pickle
+            from src.reranking.fragment_library import NeutralLossLibrary
+            with open(resolved_frag, "rb") as f:
+                loaded = pickle.load(f)
+                if isinstance(loaded, NeutralLossLibrary):
+                    frag_lib = loaded.library
+                elif isinstance(loaded, dict):
+                    frag_lib = loaded
+        except Exception:
+            frag_lib = None
+
+    db_name = resolved_db.name if resolved_db else "none"
+    idx_name = resolved_index.name if resolved_index else "none"
+    fl_status = "loaded" if frag_lib is not None else "none"
+    rk_name = resolved_ranker.name if resolved_ranker else "none"
+    tr_name = resolved_train.name if resolved_train else "none"
+
+    assets_summary = {{
+        "DB": db_name,
+        "Index": idx_name,
+        "FragLib": fl_status,
+        "Ranker": rk_name,
+        "TrainRef": tr_name,
+    }}
+    print(format_banner(assets=assets_summary, total_queries=total_specs))
+    sys.stdout.flush()
 
     with CASMIOmegaPipeline(
         db_path=resolved_db,
