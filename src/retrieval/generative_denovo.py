@@ -40,6 +40,8 @@ class BoundedGenerativeEngine:
         effective_timeout = (
             timeout_seconds if timeout_seconds is not None else self.timeout_seconds
         )
+        if effective_timeout <= 0.0:
+            return []
 
         # Avoid context manager shutdown(wait=True) hang on timeout
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)

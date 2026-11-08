@@ -211,6 +211,7 @@ class NeutralLossLibrary:
         self.min_intensity = float(min_intensity)
         self.max_mass = float(max_mass)
         self.library: Dict[int, List[str]] = {}
+        self._sorted_keys: Optional[List[int]] = None
 
         if library is not None:
             for k, v in library.items():
@@ -460,6 +461,7 @@ class NeutralLossLibrary:
             with open(p, "rb") as f:
                 raw = pickle.load(f)
             self.library = {int(k): list(v) for k, v in raw.items()}
+        self._sorted_keys = None
 
     @classmethod
     def from_file(cls, path: Union[str, Path]) -> NeutralLossLibrary:
@@ -489,10 +491,12 @@ class NeutralLossLibrary:
         if min_k > max_k:
             return []
 
-        if (max_k - min_k) <= 2000:
-            return [k for k in range(min_k, max_k + 1) if k in self.library]
+        if self._sorted_keys is None or len(self._sorted_keys) != len(self.library):
+            self._sorted_keys = sorted(self.library.keys())
 
-        return [k for k in sorted(self.library.keys()) if min_k <= k <= max_k]
+        idx_left = bisect.bisect_left(self._sorted_keys, min_k)
+        idx_right = bisect.bisect_right(self._sorted_keys, max_k)
+        return self._sorted_keys[idx_left:idx_right]
 
 
 def purge_mixtures(candidates: List[str]) -> List[str]:

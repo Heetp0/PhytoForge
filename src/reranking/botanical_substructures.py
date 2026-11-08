@@ -148,6 +148,7 @@ class BotanicalSubstructureScorer:
 
     def __init__(self, tolerance_da: float = 0.025):
         self.tolerance_da = tolerance_da
+        self._smarts_match_cache: Dict[Tuple[str, str], bool] = {}
 
         # Precompile SMARTS patterns if RDKit is available
         self._botanical_patterns: Dict[str, List[Any]] = {}
@@ -251,7 +252,21 @@ class BotanicalSubstructureScorer:
         return False
 
     def _has_match(self, mol: Any, category: str, smiles_str: Optional[str] = None) -> bool:
-        """Check if molecule matches category via RDKit SMARTS or SMILES fallback."""
+        """Check if molecule matches category via RDKit SMARTS or SMILES fallback with caching."""
+        # Extract SMILES string for caching
+        smi = smiles_str
+        if not smi and isinstance(mol, str):
+            smi = mol
+        elif not smi and _RDKIT_AVAILABLE and Chem is not None and isinstance(mol, Chem.Mol):
+            try:
+                smi = Chem.MolToSmiles(mol)
+            except Exception:
+                smi = None
+
+        if smi and (smi, category) in self._smarts_match_cache:
+            return self._smarts_match_cache[(smi, category)]
+
+        match_result = False
         if _RDKIT_AVAILABLE and Chem is not None and isinstance(mol, Chem.Mol):
             if category in self._botanical_patterns:
                 patterns = self._botanical_patterns[category]
@@ -263,24 +278,17 @@ class BotanicalSubstructureScorer:
             for pat in patterns:
                 try:
                     if mol.HasSubstructMatch(pat):
-                        return True
+                        match_result = True
+                        break
                 except Exception:
                     continue
 
-        # Extract SMILES string for fallback
-        smi = smiles_str
-        if not smi and isinstance(mol, str):
-            smi = mol
-        elif not smi and _RDKIT_AVAILABLE and Chem is not None and isinstance(mol, Chem.Mol):
-            try:
-                smi = Chem.MolToSmiles(mol)
-            except Exception:
-                smi = None
+        if not match_result and smi and isinstance(smi, str):
+            match_result = self._has_match_smiles(smi, category)
 
-        if not smi or not isinstance(smi, str):
-            return False
-
-        return self._has_match_smiles(smi, category)
+        if smi:
+            self._smarts_match_cache[(smi, category)] = match_result
+        return match_result
 
     def detect_spectral_signatures(
         self,
@@ -388,15 +396,15 @@ class BotanicalSubstructureScorer:
     def score_candidate(
         self,
         mol: Any,
-        fused_peaks: Optional[Any],
-        neutral_mass: float,
+        fused_peaks: Optional[Any] = None,
+        neutral_mass: float = 0.0,
         precursor_mz: Optional[float] = None,
     ) -> float:
         """
         Evaluate candidate Mol against detected botanical MS/MS signatures.
 
         Args:
-            mol: RDKit Mol or SMILES string.
+            mol: RDKit Mol, SMILES string, or candidate Dict with 'smiles'.
             fused_peaks: Query MS/MS spectrum peaks.
             neutral_mass: Precursor neutral mass in Daltons.
             precursor_mz: Optional observed precursor m/z.
@@ -409,7 +417,14 @@ class BotanicalSubstructureScorer:
 
         m = None
         smi = None
-        if isinstance(mol, str):
+        if isinstance(mol, dict):
+            smi = str(mol.get("smiles") or mol.get("smiles_str") or mol.get("structure") or "").strip()
+            if _RDKIT_AVAILABLE and Chem is not None and smi:
+                try:
+                    m = Chem.MolFromSmiles(smi)
+                except Exception:
+                    m = None
+        elif isinstance(mol, str):
             smi = mol.strip()
             if _RDKIT_AVAILABLE and Chem is not None:
                 try:

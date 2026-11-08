@@ -240,6 +240,7 @@ class CASMIOmegaPipeline:
         train_data_path: Optional[Union[str, Path]] = None,
     ):
         self.fallback_pool = [f"IK14FALL{i:06d}" for i in range(50)]
+        self._explicit_db = db is not None
         self.db = db if db is not None else {
             "C15H10O5": [("c1cc(O)c2c(=O)cc(-c3ccccc3)oc2c1", "IK14DBFLAV0001", np.ones(3, dtype=np.float32))],
             "C15H10O6": [("c1cc(O)c2c(=O)cc(-c3ccc(O)cc3)oc2c1", "IK14DBFLAV0002", np.ones(3, dtype=np.float32))],
@@ -641,14 +642,14 @@ class CASMIOmegaPipeline:
                     polarity=polarity,
                     query_instrument="timsTOF",
                 )
-            elif self.db_path is None:
+            elif self.db_path is None and not self._explicit_db:
                 # In-memory mock/unit-test mode: retain dummy scaffold candidate
                 dummy_lib = [("c1ccccc1", "IK14DREAM00001", fused_emb.copy(), "timsTOF")]
                 track1_cands, _ = self.dreams_retriever.evaluate_candidates(
                     query_emb=fused_emb, raw_candidates=dummy_lib, query_instrument="timsTOF"
                 )
             else:
-                # Production mode with candidate DB: skip stub DreaMS candidates
+                # Production mode or explicit candidate DB: skip stub DreaMS candidates
                 track1_cands = []
 
             # Track 2: Formula-constrained database search with Dynamic Query Fingerprint Synthesis
