@@ -63,12 +63,19 @@ class SoftDatabaseSearcher:
         return float(intersection / (union + 1e-12))
 
     def search_formulas(
-        self, formulas: List[str], query_fp: np.ndarray
+        self,
+        formulas: List[str],
+        query_fp: np.ndarray,
+        max_candidates_per_formula: Optional[int] = None,
     ) -> List[DBCandidate]:
         if self.repo is not None:
             from src.data.db_indexer import popcount_tanimoto
 
-            metadata, fps_matrix = self.repo.search_by_formulas(formulas, deduplicate=True)
+            metadata, fps_matrix = self.repo.search_by_formulas(
+                formulas,
+                deduplicate=True,
+                max_per_formula=max_candidates_per_formula,
+            )
             candidates: List[DBCandidate] = []
 
             if len(metadata) > 0 and fps_matrix.size > 0:
@@ -107,7 +114,10 @@ class SoftDatabaseSearcher:
         batch_fps: List[np.ndarray] = []
 
         for form in formulas:
-            for smiles, ik14, mol_fp in self.db.get(form, []):
+            form_cands = self.db.get(form, [])
+            if max_candidates_per_formula is not None:
+                form_cands = form_cands[:max_candidates_per_formula]
+            for smiles, ik14, mol_fp in form_cands:
                 if ik14 in seen_ik14:
                     continue
                 seen_ik14.add(ik14)

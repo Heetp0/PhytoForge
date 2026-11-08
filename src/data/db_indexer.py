@@ -162,6 +162,10 @@ def popcount_tanimoto(
     else:
         query_u64 = np.ascontiguousarray(query_fp, dtype=np.uint64)
 
+    # Fast path: zero query fingerprint produces zero similarity
+    if np.count_nonzero(query_u64) == 0:
+        return np.zeros(candidate_fps.shape[0], dtype=np.float32)
+
     # Fast path: Numba JIT parallel popcount
     if _NUMBA_AVAILABLE and _numba_popcount_tanimoto is not None:
         try:
@@ -475,7 +479,7 @@ class ChemicalDatabaseRepository:
 
         # Apply inference-time read pragmas
         for pragma in [
-            "PRAGMA mmap_size=30000000000;",  # 30 GB mmap window
+            "PRAGMA mmap_size=1073741824;",  # 1 GB mmap window (safe for Kaggle 16GB)
             "PRAGMA query_only=ON;",
             "PRAGMA threads=4;",
             "PRAGMA temp_store=MEMORY;",
@@ -489,6 +493,7 @@ class ChemicalDatabaseRepository:
         self,
         formulas: List[str],
         deduplicate: bool = True,
+        max_per_formula: Optional[int] = None,
     ) -> Tuple[List[Tuple[str, str, str]], np.ndarray]:
         """
         Batched formula retrieval in chunks of 250 formulas.
@@ -496,6 +501,7 @@ class ChemicalDatabaseRepository:
         Args:
             formulas: List of Hill chemical formulas (e.g. ['C9H8O4', 'C15H10O5']).
             deduplicate: If True, deduplicates returned candidates by InChIKey14.
+            max_per_formula: Optional maximum number of candidate structures returned per formula.
 
         Returns:
             (metadata_list, contiguous_uint64_matrix) where:
@@ -527,13 +533,19 @@ class ChemicalDatabaseRepository:
             return [], np.empty((0, 32), dtype=np.uint64)
 
         seen_ik14 = set()
+        formula_counts: Dict[str, int] = {}
         filtered_rows: List[Tuple[str, str, str, bytes]] = []
         for r in all_rows:
+            form = r[0]
             ik14 = r[1]
+            if max_per_formula is not None:
+                if formula_counts.get(form, 0) >= max_per_formula:
+                    continue
             if deduplicate:
                 if ik14 in seen_ik14:
                     continue
                 seen_ik14.add(ik14)
+            formula_counts[form] = formula_counts.get(form, 0) + 1
             filtered_rows.append(r)
 
         if not filtered_rows:

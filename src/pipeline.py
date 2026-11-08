@@ -224,6 +224,10 @@ class CASMIOmegaPipeline:
             if spectral_index_path is not None
             else CalibratedDreaMSRetriever()
         )
+        if spectral_index_path is not None:
+            self.dreams_retriever.set_threshold("timsTOF", "timsTOF", 0.78)
+            self.dreams_retriever.set_threshold("timsTOF", "Orbitrap", 0.76)
+            self.dreams_retriever.set_threshold("generic", "generic", 0.75)
         self.ref_spectral_matcher = ReferenceSpectralMatcher(train_path=train_data_path)
         self.db_searcher = SoftDatabaseSearcher(
             db=self.db,
@@ -579,14 +583,52 @@ class CASMIOmegaPipeline:
                 # Production mode with candidate DB: skip stub DreaMS candidates
                 track1_cands = []
 
-            # Track 2: Formula-constrained database search
-            # Fix: use all-ones packed uint64 fingerprint as a neutral query so that all
-            # formula-matched candidates from the SQLite DB receive equal Tanimoto scores
-            # (intersection / union = popcount(candidate) / popcount(candidate) = 1.0).
-            # This ensures every formula-matched candidate is retrieved rather than scored 0.
+            # Track 2: Formula-constrained database search with Dynamic Query Fingerprint Synthesis
             if getattr(self.db_searcher, "repo", None) is not None:
-                # Packed 2048-bit all-ones fingerprint (32 × uint64 max)
-                db_query_fp = np.full(32, np.iinfo(np.uint64).max, dtype=np.uint64)
+                db_query_fp = None
+                # Priority 1: If an authentic spectral match exists in track 1, inherit its fingerprint
+                if track1_cands:
+                    top_t1_smi = getattr(track1_cands[0], "smiles", None)
+                    if top_t1_smi:
+                        try:
+                            from src.chemistry.standardizer import compute_fingerprint
+                            from src.data.db_indexer import pack_fingerprint
+                            t1_raw_fp = compute_fingerprint(top_t1_smi)
+                            if t1_raw_fp is not None:
+                                db_query_fp = pack_fingerprint(t1_raw_fp)
+                        except Exception:
+                            db_query_fp = None
+
+                # Priority 2: Invert detected botanical substructure priors into Morgan bit activations
+                if db_query_fp is None and hasattr(self, "botanical_scorer"):
+                    try:
+                        sigs = self.botanical_scorer.detect_spectral_signatures(
+                            fused_peaks=fused_peaks, neutral_mass=neutral_mass, precursor_mz=precursor_mz
+                        )
+                        matched_scaff = None
+                        if sigs.get("flavonoid") and "quercetin" in BOTANICAL_AGLYCONE_LIBRARY:
+                            matched_scaff = BOTANICAL_AGLYCONE_LIBRARY["quercetin"]["smiles"]
+                        elif sigs.get("galloyl") and "gallic_acid" in BOTANICAL_AGLYCONE_LIBRARY:
+                            matched_scaff = BOTANICAL_AGLYCONE_LIBRARY["gallic_acid"]["smiles"]
+                        elif sigs.get("caffeoyl") and "caffeic_acid" in BOTANICAL_AGLYCONE_LIBRARY:
+                            matched_scaff = BOTANICAL_AGLYCONE_LIBRARY["caffeic_acid"]["smiles"]
+
+                        if matched_scaff:
+                            from src.chemistry.standardizer import compute_fingerprint
+                            from src.data.db_indexer import pack_fingerprint
+                            scaff_raw_fp = compute_fingerprint(matched_scaff)
+                            if scaff_raw_fp is not None:
+                                db_query_fp = pack_fingerprint(scaff_raw_fp)
+                    except Exception:
+                        db_query_fp = None
+
+                # Priority 3: Fall back to balanced natural-product background prior (sparse ~10% bit pattern)
+                # rather than all-ones which artificially inflates high-molecular-weight bit-dense molecules
+                if db_query_fp is None:
+                    sparse_u64 = np.zeros(32, dtype=np.uint64)
+                    for word_i in range(32):
+                        sparse_u64[word_i] = np.uint64(0x2492492492492492)
+                    db_query_fp = sparse_u64
             else:
                 db_query_fp = np.ones(3, dtype=np.float32)
 
@@ -596,7 +638,9 @@ class CASMIOmegaPipeline:
             for form_entry in formula_priors:
                 form = form_entry[0] if isinstance(form_entry, (tuple, list)) else form_entry
                 prob = form_entry[1] if isinstance(form_entry, (tuple, list)) and len(form_entry) > 1 else 1.0
-                f_cands = self.db_searcher.search_formulas(formulas=[form], query_fp=db_query_fp)
+                f_cands = self.db_searcher.search_formulas(
+                    formulas=[form], query_fp=db_query_fp, max_candidates_per_formula=120
+                )
                 for fc in f_cands:
                     if getattr(fc, "source_tier", "") == "track2_fallback":
                         continue
@@ -609,7 +653,7 @@ class CASMIOmegaPipeline:
 
             if not track2_cands:
                 track2_cands = self.db_searcher.search_formulas(
-                    formulas=routing.formulas, query_fp=db_query_fp
+                    formulas=routing.formulas, query_fp=db_query_fp, max_candidates_per_formula=120
                 )
 
             # Multi-adduct hypothesis expansion when primary formula retrieval yields sparse candidates (< 5)

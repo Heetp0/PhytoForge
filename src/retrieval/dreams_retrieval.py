@@ -56,6 +56,10 @@ class CalibratedDreaMSRetriever:
             self.calibration_table.get(("generic", "generic"), 0.85),
         )
 
+    def set_threshold(self, query_inst: str, lib_inst: str, threshold: float) -> None:
+        """Dynamically update instrument-stratified cosine threshold."""
+        self.calibration_table[(str(query_inst), str(lib_inst))] = float(threshold)
+
     def retrieve(
         self,
         query_emb: np.ndarray,
