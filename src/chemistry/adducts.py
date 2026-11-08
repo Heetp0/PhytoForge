@@ -106,7 +106,7 @@ COMPETITION_ADDUCTS: Dict[str, AdductInfo] = {
     ),
 }
 
-# Extended Adducts (for physical plausibility & multi-water-loss modeling)
+# Extended Adducts (for physical plausibility, multi-water-loss & non-covalent dimers)
 EXTENDED_ADDUCTS: Dict[str, AdductInfo] = {
     "[M-2H2O+H]+": AdductInfo(
         name="[M-2H2O+H]+",
@@ -121,6 +121,27 @@ EXTENDED_ADDUCTS: Dict[str, AdductInfo] = {
         charge=-1,
         mult=1,
         delta_mass=-37.028405820,
+    ),
+    "[2M+H]+": AdductInfo(
+        name="[2M+H]+",
+        polarity="positive",
+        charge=1,
+        mult=2,
+        delta_mass=1.007276452,
+    ),
+    "[2M-H]-": AdductInfo(
+        name="[2M-H]-",
+        polarity="negative",
+        charge=-1,
+        mult=2,
+        delta_mass=-1.007276452,
+    ),
+    "[2M+Na]+": AdductInfo(
+        name="[2M+Na]+",
+        polarity="positive",
+        charge=1,
+        mult=2,
+        delta_mass=22.989220702,
     ),
 }
 

@@ -70,6 +70,7 @@ def fuse_peaks(
     frames: List[SpectralFrame],
     tolerance_da: float = 0.02,
     intensity_aggregation: str = "max",
+    normalize_per_frame: bool = True,
 ) -> np.ndarray:
     """
     Merge and deduplicate MS2 peaks across collision energies within mass tolerance.
@@ -81,6 +82,8 @@ def fuse_peaks(
             - 'max': Keep peak maximum across energies (preserves strongest fragmentation).
             - 'sum': Total ion intensity across energies.
             - 'mean': Average intensity across energies.
+        normalize_per_frame: If True, base-peak normalizes each acquisition frame to 100.0
+                             so disparate raw count scales do not swamp normalized frames.
 
     Returns:
         (N, 2) float64 array of merged peaks [m/z, intensity] sorted by m/z ascending.
@@ -88,11 +91,16 @@ def fuse_peaks(
     if not frames:
         return np.zeros((0, 2), dtype=np.float64)
 
-    # Collect all valid peaks from frames
+    # Collect all valid peaks from frames with optional base-peak normalization
     all_peak_chunks = []
     for frame in frames:
         if frame.peaks is not None and len(frame.peaks) > 0:
-            all_peak_chunks.append(frame.peaks)
+            p_chunk = frame.peaks.copy()
+            if normalize_per_frame and len(p_chunk) > 0:
+                max_int = float(np.max(p_chunk[:, 1]))
+                if max_int > 0.0:
+                    p_chunk[:, 1] = (p_chunk[:, 1] / max_int) * 100.0
+            all_peak_chunks.append(p_chunk)
 
     if not all_peak_chunks:
         return np.zeros((0, 2), dtype=np.float64)
@@ -241,12 +249,14 @@ class MultiEnergyFusionEngine:
         frames: List[SpectralFrame],
         tolerance_da: float = 0.02,
         intensity_aggregation: str = "max",
+        normalize_per_frame: bool = True,
     ) -> np.ndarray:
         """Merge and deduplicate MS2 peaks across collision energies."""
         return fuse_peaks(
             frames=frames,
             tolerance_da=tolerance_da,
             intensity_aggregation=intensity_aggregation,
+            normalize_per_frame=normalize_per_frame,
         )
 
     def fuse(
@@ -254,6 +264,7 @@ class MultiEnergyFusionEngine:
         frames: List[SpectralFrame],
         tolerance_da: float = 0.02,
         intensity_aggregation: str = "max",
+        normalize_per_frame: bool = True,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Execute full fusion across both embeddings and peak lists.
@@ -266,6 +277,7 @@ class MultiEnergyFusionEngine:
             frames=frames,
             tolerance_da=tolerance_da,
             intensity_aggregation=intensity_aggregation,
+            normalize_per_frame=normalize_per_frame,
         )
         return fused_emb, fused_p
 

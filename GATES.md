@@ -1,26 +1,32 @@
-# Acceptance Gates: PhytoForge CASMI 2026 1st Place Push (Phase 6)
+# Acceptance Gates Ledger — Remaining Subsystems Audit & Optimization
+Scope: Enveda CASMI 2026 Comprehensive Non-God Node Subsystem Optimization
+Pipeline: Wave A (Chemistry & Preprocessing Core) -> Wave B (Knapsack & De Novo Assembly) -> Wave C (Evaluation & Data Tooling)
 
-## Gate 1: Multi-Adduct Routing
-Observable outcome: Sodium, ammonium, water loss, and formate/chloride adduct queries correctly route to candidate formulas and retrieve candidates when primary lookup fails or yields low spectral match.
-CHECK: python -m pytest tests/test_multi_adduct_routing.py -v -W error
-STATUS: MET (10 passed)
+---
 
-## Gate 2: Botanical Substructure & Neutral-Loss Prior Scoring
-Observable outcome: `BotanicalSubstructureScorer` scores candidates based on characteristic glycoside, caffeoyl, galloyl, and diagnostic fragment matches, breaking isomer ties and purging disconnected '+' mixtures.
-CHECK: python -m pytest tests/test_botanical_substructures.py -v -W error
-STATUS: MET (24 passed)
+## Gates
 
-## Gate 3: Intra-Formula LambdaMART Dataset & Ranker Training
-Observable outcome: `AuthenticRankerDatasetBuilder` constructs training groups composed of authentic ground truth, high-Tanimoto analogs, and intra-formula constitutional isomers, forcing LightGBM trees to split on structural fragmentation.
-CHECK: python -m pytest tests/test_authentic_ranker_training.py -v -W error
-STATUS: MET (11 passed)
+### G-WAVE-A-CHEM: Chemistry & Preprocessing Core Verification
+Observable outcome: All chemistry standardization, multi-adduct neutral mass calculations, multi-energy spectral fusion, and isotope carbon/halogen detection pass under strict zero-warning mode without regressions.
+CHECK: python -m pytest tests/test_wave_a_chemistry_core.py tests/test_m1_chemistry_submission.py tests/test_halogen_filter.py -q -W error
+EXPECT: passed
 
-## Gate 4: Full Test Suite Zero-Warning Regression Standard
-Observable outcome: Entire test suite passes with zero failures and zero warnings under `-W error`.
-CHECK: python -m pytest tests/test_multi_adduct_routing.py tests/test_botanical_substructures.py tests/test_authentic_ranker_training.py tests/test_halogen_filter.py tests/test_kaggle_bundle.py -q -W error
-STATUS: MET (44 passed in 17.29s)
+### G-WAVE-B-KNAP: Knapsack & De Novo Substructure Assembly Verification
+Observable outcome: Fragment library parsing, BRICS ILP knapsack mass decomposition, neutral loss mining, and latency-bounded de novo sampling execute cleanly with mixture purging and zero disconnected tokens.
+CHECK: python -m pytest tests/test_wave_b_knapsack_assembly.py tests/test_botanical_substructures.py -q -W error
+EXPECT: passed
 
-## Gate 5: Kaggle Standalone Bundle Generation & Validation
-Observable outcome: `dist/kaggle_kernel.py` compiles with embedded modules and executes end-to-end on test data within latency and format requirements.
-CHECK: python -m src.submission.kaggle_bundle -o dist/kaggle_kernel.py
-STATUS: MET (156.8 KB compiled, 87.2s on 50 spectra, 0 '+' mixtures, MRR@25 = 0.5437)
+### G-WAVE-C-EVAL: Evaluation & Data Pipeline Verification
+Observable outcome: Offline CASMI evaluation metrics (MRR@25, Hit@1, Hit@5, Hit@25), train/test splitters, parquet loading, and ranker dataset builders execute with zero errors under `-W error`.
+CHECK: python -m pytest tests/test_wave_c_evaluation_data.py tests/test_authentic_ranker_training.py -q -W error
+EXPECT: passed
+
+### G-REGRESS-GLOBAL: Global Repository Zero-Regression Test Suite
+Observable outcome: Full repository test suite across all 850+ unit and integration tests passes with zero failures and zero warnings.
+CHECK: python -m pytest tests/ -q -W error
+EXPECT: passed
+
+### G-KERNEL-VERIFY: Standalone Kernel Bundle Recompilation
+Observable outcome: Single-file zero-network `dist/kaggle_kernel.py` compiles successfully and passes AST validation.
+CHECK: python -m src.submission.kaggle_bundle
+EXPECT: Kaggle standalone kernel successfully generated

@@ -175,7 +175,10 @@ def deduplicate_smiles_list(smiles_list: List[str]) -> List[Tuple[str, str]]:
     return unique_candidates
 
 
-def compute_hill_formula(mol_or_smiles: Any) -> Optional[str]:
+def compute_hill_formula(
+    mol_or_smiles: Any,
+    standardize: bool = False,
+) -> Optional[str]:
     """
     Computes the canonical Hill system formula for a chemical structure.
     Hill system convention:
@@ -184,6 +187,7 @@ def compute_hill_formula(mol_or_smiles: Any) -> Optional[str]:
 
     Args:
         mol_or_smiles: RDKit Mol object or SMILES string.
+        standardize: If True, strips salts and counterions to isolate neutral parent.
 
     Returns:
         Hill formula string (e.g. 'C9H8O4'), or None if parsing/computation fails.
@@ -199,9 +203,19 @@ def compute_hill_formula(mol_or_smiles: Any) -> Optional[str]:
             clean = mol_or_smiles.strip()
             if not clean:
                 return None
-            mol = Chem.MolFromSmiles(clean)
+            if standardize:
+                canon_smi, _ = standardize_mol(clean)
+                if not canon_smi:
+                    return None
+                mol = Chem.MolFromSmiles(canon_smi)
+            else:
+                mol = Chem.MolFromSmiles(clean)
         elif isinstance(mol_or_smiles, Chem.Mol):
-            mol = mol_or_smiles
+            if standardize:
+                parent = rdMolStandardize.FragmentParent(mol_or_smiles)
+                mol = _UNCHARGER.uncharge(parent) if parent else mol_or_smiles
+            else:
+                mol = mol_or_smiles
         else:
             return None
 
