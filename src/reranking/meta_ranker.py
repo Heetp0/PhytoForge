@@ -21,8 +21,16 @@ class GBDTMetaRanker:
         # Default heuristic weights if offline model not loaded
         # Feature 0 (dreams_cosine) receives dominant priority (50.0) so authentic
         # reference spectra matches are ranked #1 even in zero-model fallback mode.
+        # Features 8 (RDA fragmentation) and 31 (botanical prior) are amplified to
+        # decisively discriminate intra-formula constitutional isomers.
         default_weights = np.ones(33, dtype=np.float32)
         default_weights[0] = 50.0
+        default_weights[8] = 12.0
+        default_weights[31] = 10.0
+        default_weights[9] = 5.0
+        default_weights[4] = 4.0
+        default_weights[3] = 3.0
+        default_weights[25] = 2.0
         self.weights = weights if weights is not None else default_weights
         self.booster = booster
         if self.booster is None and model_path is not None:
@@ -119,6 +127,7 @@ class GBDTMetaRanker:
         if self.booster is not None:
             # High-performance vectorized batch scoring
             X = np.asarray([cand["features"] for cand in candidates], dtype=np.float32)
+            X = np.nan_to_num(X, nan=0.0, posinf=1.0, neginf=0.0)
             try:
                 scores = self.booster.predict(X, num_threads=1)
             except (TypeError, ValueError):
@@ -130,7 +139,7 @@ class GBDTMetaRanker:
                 cand["score"] = s_val
         else:
             for cand in candidates:
-                feat = cand["features"]
+                feat = np.nan_to_num(cand["features"], nan=0.0, posinf=1.0, neginf=0.0)
                 score_val = float(
                     np.dot(feat[: len(self.weights)], self.weights[: len(feat)])
                 )

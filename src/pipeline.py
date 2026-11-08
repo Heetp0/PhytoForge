@@ -885,6 +885,14 @@ class CASMIOmegaPipeline:
                 shared_frag_ratio = min(1.0, float(matched_nl) / max(1, len(fused_peaks)))
                 shared_nl_matches = matched_nl
 
+            form_rank_map = {}
+            for f_rank, form_entry in enumerate(formula_priors, start=1):
+                f_name = form_entry[0] if isinstance(form_entry, (tuple, list)) else form_entry
+                if f_name:
+                    form_rank_map[f_name] = f_rank
+            total_active_tracks = max(1, len({c.get("source", "unknown") for c in aggregated_cands}))
+            max_cand_raw_score = max((float(c.get("score", 0.5)) for c in aggregated_cands), default=0.5)
+
             scored_candidates = []
             for c in aggregated_cands:
                 cand_ppm = 2.0
@@ -911,13 +919,12 @@ class CASMIOmegaPipeline:
                     n_n = smi.count("N") + smi.count("n")
                     np_score = float((n_o * 1.5 + n_n * 1.2) / n_c)
 
-                # Optional RDKit refinement (in-silico bond cleavage & exact MW)
+                # Optional RDKit refinement (in-silico bond cleavage & exact MW using mol_cache)
                 m = None
                 if smi and isinstance(smi, str):
                     try:
                         from rdkit.Chem.Descriptors import ExactMolWt
-                        from rdkit import Chem
-                        m = Chem.MolFromSmiles(smi)
+                        m, _ = _get_cached_mol_and_fp(smi, mol_cache)
                         if m is not None:
                             cand_mw = float(ExactMolWt(m))
                             cand_abs_da = abs(cand_mw - neutral_mass)
@@ -960,6 +967,20 @@ class CASMIOmegaPipeline:
                 ik_key = c.get("inchikey14", "")
                 agreed_count = len(track_counts.get(ik_key, {c.get("source", "unknown")}))
 
+                # Topological isomer features (zero-latency pure-Python proxies)
+                smi_clean = str(smi or "")
+                smi_len = max(1, len(smi_clean))
+                aromatic_atoms = sum(1 for ch in smi_clean if ch in "cno")
+                cand_aromatic_ratio = float(aromatic_atoms / smi_len)
+                cand_mw_norm = float(np.clip(neutral_mass / 1000.0, 0.05, 1.5))
+                cand_hbd = float(min(10.0, smi_clean.count("O") + smi_clean.count("N")))
+                cand_hba = float(min(15.0, smi_clean.count("O") * 2.0 + smi_clean.count("N")))
+                cand_rot_bonds = float(min(12.0, smi_clean.count("-") + smi_clean.count("CC")))
+                cand_tpsa_norm = float(np.clip((smi_clean.count("O") * 20.0 + smi_clean.count("N") * 15.0) / 250.0, 0.0, 1.0))
+                cand_form_rank = int(form_rank_map.get(cand_form, 1))
+                cand_consensus_ratio = float(agreed_count / total_active_tracks)
+                cand_score_delta = float(max_cand_raw_score - float(c.get("score", 0.5)))
+
                 feat = self.meta_ranker.extract_feature_vector(
                     dreams_cosine=dreams_cos,
                     mist_tanimoto=blended_mist,
@@ -969,8 +990,18 @@ class CASMIOmegaPipeline:
                     np_score=np_score,
                     entropy_similarity=0.8,
                     cross_track_agreement_count=agreed_count,
-                    formula_rank=1,
+                    formula_rank=cand_form_rank,
                     source_track=c["source"],
+                    score_delta_to_top2=cand_score_delta,
+                    track1_score_margin=0.1,
+                    track2_tanimoto_margin=0.1,
+                    cross_track_consensus_ratio=cand_consensus_ratio,
+                    molecular_weight_norm=cand_mw_norm,
+                    h_bond_donors_est=cand_hbd,
+                    h_bond_acceptors_est=cand_hba,
+                    rotatable_bonds_est=cand_rot_bonds,
+                    tpsa_est_norm=cand_tpsa_norm,
+                    aromatic_ring_ratio=cand_aromatic_ratio,
                     neutral_loss_match_count=shared_nl_matches,
                     composite_prior_confidence=bot_score,
                 )
