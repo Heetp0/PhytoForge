@@ -9,24 +9,24 @@ Pipeline: Wave A (Chemistry & Preprocessing Core) -> Wave B (Knapsack & De Novo 
 ### G-WAVE-A-CHEM: Chemistry & Preprocessing Core Verification
 Observable outcome: All chemistry standardization, multi-adduct neutral mass calculations, multi-energy spectral fusion, and isotope carbon/halogen detection pass under strict zero-warning mode without regressions.
 CHECK: python -m pytest tests/test_wave_a_chemistry_core.py tests/test_m1_chemistry_submission.py tests/test_halogen_filter.py -q -W error
-EXPECT: passed
+STATUS: PASSED (61 passed in 28.97s, commit `6a20fd4`)
 
 ### G-WAVE-B-KNAP: Knapsack & De Novo Substructure Assembly Verification
 Observable outcome: Fragment library parsing, BRICS ILP knapsack mass decomposition, neutral loss mining, and latency-bounded de novo sampling execute cleanly with mixture purging and zero disconnected tokens.
 CHECK: python -m pytest tests/test_wave_b_knapsack_assembly.py tests/test_botanical_substructures.py -q -W error
-EXPECT: passed
+STATUS: PASSED (20 passed in 1.14s, commit `e2521fb`)
 
 ### G-WAVE-C-EVAL: Evaluation & Data Pipeline Verification
 Observable outcome: Offline CASMI evaluation metrics (MRR@25, Hit@1, Hit@5, Hit@25), train/test splitters, parquet loading, and ranker dataset builders execute with zero errors under `-W error`.
 CHECK: python -m pytest tests/test_wave_c_evaluation_data.py tests/test_authentic_ranker_training.py -q -W error
-EXPECT: passed
+STATUS: PASSED (11 passed in 3.85s, commit `63db15f`)
 
 ### G-REGRESS-GLOBAL: Global Repository Zero-Regression Test Suite
-Observable outcome: Full repository test suite across all 850+ unit and integration tests passes with zero failures and zero warnings.
+Observable outcome: Full repository test suite across all 1000+ unit and integration tests passes with zero failures and zero warnings.
 CHECK: python -m pytest tests/ -q -W error
-EXPECT: passed
+STATUS: PASSED (1005 passed in 628.91s, commit `ba748da`)
 
 ### G-KERNEL-VERIFY: Standalone Kernel Bundle Recompilation
 Observable outcome: Single-file zero-network `dist/kaggle_kernel.py` compiles successfully and passes AST validation.
 CHECK: python -m src.submission.kaggle_bundle
-EXPECT: Kaggle standalone kernel successfully generated
+STATUS: PASSED (Kernel size: 538.7 KB / 551,586 bytes, 15 bundle benchmark tests passed in 37.88s)
