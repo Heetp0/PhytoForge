@@ -15,23 +15,24 @@ def _matches_ik14(target: str, cand: str) -> bool:
     Check if a candidate matches the ground-truth target either by exact string
     equality (case-insensitive) or by 14-character InChIKey skeletal block prefix.
     """
-    if not target or not cand:
+    if target is None or cand is None:
         return False
-    if target == cand:
+    t = str(target).strip().upper()
+    c = str(cand).strip().upper()
+    if not t or not c:
+        return False
+    if t == c:
         return True
 
-    # Compare first block if hyphenated InChIKey
-    t_block = target.split("-")[0] if "-" in target else target
-    c_block = cand.split("-")[0] if "-" in cand else cand
-    if t_block == c_block:
-        return True
-
-    # If both are at least 14 characters, check 14-char skeletal block
-    if len(target) >= 14 and len(cand) >= 14:
-        if target[:14] == cand[:14]:
+    # Fast-path 14-char skeletal block prefix
+    if len(t) >= 14 and len(c) >= 14:
+        if t[:14] == c[:14]:
             return True
 
-    return False
+    # Compare first block if hyphenated InChIKey
+    t_block = t.split("-")[0] if "-" in t else t
+    c_block = c.split("-")[0] if "-" in c else c
+    return t_block == c_block
 
 
 def calculate_reciprocal_rank(
@@ -57,7 +58,7 @@ def calculate_reciprocal_rank(
         1.0 for rank 1, 0.5 for rank 2, ..., 1.0 / k for rank k; 0.0 if not found
         within top-k or if inputs are invalid / empty / k <= 0.
     """
-    if k <= 0 or not ground_truth_ik14 or not predicted_slots:
+    if k <= 0 or not ground_truth_ik14 or predicted_slots is None or len(predicted_slots) == 0:
         return 0.0
 
     target = _normalize_key(ground_truth_ik14)

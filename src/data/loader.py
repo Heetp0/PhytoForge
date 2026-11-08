@@ -266,9 +266,25 @@ class SpectrumLoader:
         if not path.exists():
             raise FileNotFoundError(f"Parquet file not found: {path}")
 
-        table = pq.read_table(path)
-        if max_rows is not None and max_rows < table.num_rows:
-            table = table.slice(0, max_rows)
+        pf = pq.ParquetFile(path)
+        if max_rows is not None and max_rows > 0:
+            tables = []
+            rows_collected = 0
+            for rg_idx in range(pf.metadata.num_row_groups):
+                rg_table = pf.read_row_group(rg_idx)
+                if rows_collected + rg_table.num_rows > max_rows:
+                    needed = max_rows - rows_collected
+                    tables.append(rg_table.slice(0, needed))
+                    rows_collected += needed
+                    break
+                else:
+                    tables.append(rg_table)
+                    rows_collected += rg_table.num_rows
+                if rows_collected >= max_rows:
+                    break
+            table = pa.concat_tables(tables) if tables else pa.Table.from_batches([], schema=pf.schema_arrow)
+        else:
+            table = pf.read()
 
         df = table.to_pandas()
         return [cls.from_row_dict(row, filter_peaks=filter_peaks) for row in df.to_dict(orient="records")]
