@@ -22,54 +22,18 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple, Uni
 import pandas as pd
 import numpy as np
 
+from src.reranking.slot_optimizer import (
+    BOTANICAL_AGLYCONE_INCHIKEY14,
+    BOTANICAL_AGLYCONE_SMILES,
+)
+
 logger = logging.getLogger(__name__)
 
-# Curated bank of 40+ chemically valid, neutral, simple reference molecules
+# Curated bank of chemically valid botanical secondary metabolite aglycones
+# (flavonoids, phenylpropanoids, coumarins, triterpenoids, phenolics)
 # with known pairwise distinct InChIKey14 connectivity skeletons.
-# Used for safe emergency backfilling when candidate retrieval yields < 25 candidates.
-DEFAULT_FALLBACK_SMILES: List[str] = [
-    "C",                                    # Methane
-    "CC",                                   # Ethane
-    "CCC",                                  # Propane
-    "CCCC",                                 # Butane
-    "CCCCC",                                # Pentane
-    "CCCCCC",                               # Hexane
-    "CCCCCCC",                              # Heptane
-    "CCCCCCCC",                             # Octane
-    "c1ccccc1",                             # Benzene
-    "c1ccncc1",                             # Pyridine
-    "c1cnccn1",                             # Pyrazine (1,4-diazine)
-    "c1ncccn1",                             # Pyrimidine (1,3-diazine)
-    "c1ccoc1",                              # Furan
-    "c1ccsc1",                              # Thiophene
-    "c1cn[nH]c1",                           # Pyrazole
-    "c1cnco1",                              # Oxazole
-    "c1cnc[nH]1",                           # Imidazole
-    "c1cncs1",                              # Thiazole
-    "CC(=O)O",                              # Acetic acid
-    "CC(=O)N",                              # Acetamide
-    "CO",                                   # Methanol
-    "CCO",                                  # Ethanol
-    "CCCO",                                 # Propanol
-    "CCCCO",                                # Butanol
-    "CN",                                   # Methylamine
-    "CCN",                                  # Ethylamine
-    "CCCN",                                 # Propylamine
-    "CCCCN",                                # Butylamine
-    "C1CC1",                                # Cyclopropane
-    "C1CCC1",                               # Cyclobutane
-    "C1CCCC1",                              # Cyclopentane
-    "C1CCCCC1",                             # Cyclohexane
-    "C1CCCCCC1",                            # Cycloheptane
-    "c1ccccc1O",                            # Phenol
-    "c1ccccc1N",                            # Aniline
-    "c1ccccc1C(=O)O",                       # Benzoic acid
-    "c1ccccc1C",                            # Toluene
-    "CC(=O)Oc1ccccc1C(=O)O",                # Aspirin
-    "CN1C=NC2=C1C(=O)N(C(=O)N2C)C",         # Caffeine
-    "CC(=O)Nc1ccc(O)cc1",                   # Paracetamol
-    "CC(C)Cc1ccc(C(C)C(=O)O)cc1",           # Ibuprofen
-]
+# Used for safe domain-aligned backfilling when candidate retrieval yields < 25 candidates.
+DEFAULT_FALLBACK_SMILES: List[str] = list(BOTANICAL_AGLYCONE_SMILES)
 
 
 
@@ -498,7 +462,7 @@ def write_submission(
         with open(tmp_file, "w", newline="", encoding="utf-8") as f:
             if fmt == "inchikey14":
                 f.write("id,candidates\n")
-                fallback_pool = [f"IK14FALL{i:06d}" for i in range(50)]
+                fallback_pool = list(BOTANICAL_AGLYCONE_INCHIKEY14)
 
                 for mol_id in target_ids:
                     raw_cands = preds_dict.get(mol_id, [])

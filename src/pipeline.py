@@ -305,8 +305,22 @@ class CASMIOmegaPipeline:
         self, spec_id: str, ranked: List[Dict[str, Any]], fmt: str
     ) -> Dict[str, str]:
         """Format 25 ranked candidate slots as InChIKey14 or SMILES row using MMR portfolio optimization."""
-        slots = self.slot_optimizer.allocate_25_slots(ranked, diversity_lambda=0.88)
-        slots = [s for s in slots if "+" not in str(s)]
+        slots = self.slot_optimizer.allocate_25_slots(ranked, diversity_lambda=0.85)
+        clean_slots: List[str] = []
+        seen_clean: Set[str] = set()
+        for s in slots:
+            s_str = str(s).strip()
+            if len(s_str) == 14 and s_str.isalnum() and "+" not in s_str and s_str not in seen_clean:
+                clean_slots.append(s_str)
+                seen_clean.add(s_str)
+        if len(clean_slots) < 25:
+            for fb in self.slot_optimizer.fallback_pool:
+                if fb not in seen_clean and len(fb) == 14 and fb.isalnum() and "+" not in fb:
+                    clean_slots.append(fb)
+                    seen_clean.add(fb)
+                    if len(clean_slots) == 25:
+                        break
+        slots = clean_slots[:25]
         if fmt == "inchikey14":
             return {"id": spec_id, "candidates": ";".join(slots)}
         else:
