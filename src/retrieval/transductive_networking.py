@@ -208,6 +208,7 @@ class TransductiveMolecularNetwork:
         min_shared_peaks: int = 2,
         directional: bool = False,
         tolerance_ppm: Optional[float] = None,
+        max_delta_da: Optional[float] = 400.0,
     ) -> List[NetworkCandidate]:
         """Propagate high-confidence solved scaffolds to related targets in the test network."""
         if target_id not in self.spectra:
@@ -216,12 +217,27 @@ class TransductiveMolecularNetwork:
         target_m, target_emb, target_peaks = self.spectra[target_id]
         results: List[NetworkCandidate] = []
 
+        valid_sources: List[Tuple[str, str, str, float, np.ndarray, np.ndarray]] = []
         for source_id, (smiles, ik14) in known_scaffolds.items():
             if source_id == target_id or source_id not in self.spectra:
                 continue
             source_m, source_emb, source_peaks = self.spectra[source_id]
-            cos_sim = float(np.dot(target_emb, source_emb))
-            if cos_sim < self.cosine_threshold:
+            if max_delta_da is not None and abs(target_m - source_m) > max_delta_da:
+                continue
+            valid_sources.append((source_id, smiles, ik14, source_m, source_emb, source_peaks))
+
+        if not valid_sources:
+            return []
+
+        # Fast path: Vectorized embedding cosine similarity
+        if len(valid_sources) >= 4:
+            src_embs = np.stack([s[4] for s in valid_sources], axis=0)
+            cos_sims = np.dot(src_embs, target_emb)
+        else:
+            cos_sims = np.array([float(np.dot(s[4], target_emb)) for s in valid_sources], dtype=np.float32)
+
+        for (source_id, smiles, ik14, source_m, _, source_peaks), cos_sim in zip(valid_sources, cos_sims):
+            if float(cos_sim) < self.cosine_threshold:
                 continue
 
             delta = (target_m - source_m) if directional else abs(target_m - source_m)
@@ -236,10 +252,25 @@ class TransductiveMolecularNetwork:
                             scaffold_smiles=smiles,
                             inchikey14=ik14,
                             transformation=trans_name,
-                            network_score=cos_sim,
+                            network_score=float(cos_sim),
                         )
                     )
 
         # Sort candidates descending by network score (cosine similarity)
         results.sort(key=lambda c: c.network_score, reverse=True)
         return results
+
+    def propagate_scaffold_vectorized(
+        self,
+        target_id: str,
+        known_scaffolds: Dict[str, Tuple[str, str]],
+        min_shared_peaks: int = 2,
+        max_delta_da: Optional[float] = 400.0,
+    ) -> List[NetworkCandidate]:
+        """Explicit vectorized alias for propagate_scaffold."""
+        return self.propagate_scaffold(
+            target_id=target_id,
+            known_scaffolds=known_scaffolds,
+            min_shared_peaks=min_shared_peaks,
+            max_delta_da=max_delta_da,
+        )

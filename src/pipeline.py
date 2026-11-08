@@ -1,7 +1,7 @@
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 import numpy as np
 import pandas as pd
 
@@ -178,6 +178,51 @@ def _compute_candidate_fragment_match_ratio(
     count_ratio = float(matched) / max(1, len(peak_mzs))
     intensity_ratio = float(matched_int) / (total_int + 1e-6)
     return float(0.40 * count_ratio + 0.60 * intensity_ratio)
+
+
+def _get_cached_mol_and_fp(smi: str, cache: Dict[str, Tuple[Any, Optional[np.ndarray]]]) -> Tuple[Any, Optional[np.ndarray]]:
+    if not smi or not isinstance(smi, str):
+        return (None, None)
+    clean = smi.strip()
+    if clean in cache:
+        return cache[clean]
+    try:
+        from rdkit import Chem
+        from src.chemistry.standardizer import compute_morgan_fingerprint
+        m = Chem.MolFromSmiles(clean)
+        fp = compute_morgan_fingerprint(m) if m is not None else None
+        res = (m, fp)
+    except Exception:
+        res = (None, None)
+    if len(cache) < 15000:
+        cache[clean] = res
+    return res
+
+
+def _is_substructure_compatible(m1: Any, fp1: Optional[np.ndarray], m2: Any, fp2: Optional[np.ndarray]) -> bool:
+    """Fast bitwise-screened substructure test: returns True if m1 is substructure of m2 or m2 is substructure of m1."""
+    if m1 is None or m2 is None:
+        return False
+    # If fp1 and fp2 are available:
+    # m1 in m2 requires (fp1 & ~fp2) == 0
+    # m2 in m1 requires (fp2 & ~fp1) == 0
+    if fp1 is not None and fp2 is not None:
+        m1_in_m2 = bool(np.all((fp1 & ~fp2) == 0))
+        m2_in_m1 = bool(np.all((fp2 & ~fp1) == 0))
+        if not (m1_in_m2 or m2_in_m1):
+            return False
+        try:
+            if m1_in_m2 and m2.HasSubstructMatch(m1):
+                return True
+            if m2_in_m1 and m1.HasSubstructMatch(m2):
+                return True
+            return False
+        except Exception:
+            return False
+    try:
+        return m2.HasSubstructMatch(m1) or m1.HasSubstructMatch(m2)
+    except Exception:
+        return False
 
 
 class CASMIOmegaPipeline:
@@ -435,6 +480,7 @@ class CASMIOmegaPipeline:
         peak_ram_gb = get_process_memory_gb()
 
         scored_candidates_by_id: Dict[str, List[Dict[str, Any]]] = {}
+        mol_cache: Dict[str, Tuple[Any, Optional[np.ndarray]]] = {}
 
         for group_idx, (spec_id, group_df) in enumerate(item_groups):
             first_row = group_df.iloc[0]
@@ -591,11 +637,10 @@ class CASMIOmegaPipeline:
                     top_t1_smi = getattr(track1_cands[0], "smiles", None)
                     if top_t1_smi:
                         try:
-                            from src.chemistry.standardizer import compute_fingerprint
-                            from src.data.db_indexer import pack_fingerprint
-                            t1_raw_fp = compute_fingerprint(top_t1_smi)
-                            if t1_raw_fp is not None:
-                                db_query_fp = pack_fingerprint(t1_raw_fp)
+                            from src.chemistry.standardizer import compute_morgan_fingerprint
+                            t1_fp = compute_morgan_fingerprint(top_t1_smi)
+                            if t1_fp is not None:
+                                db_query_fp = t1_fp
                         except Exception:
                             db_query_fp = None
 
@@ -606,19 +651,18 @@ class CASMIOmegaPipeline:
                             fused_peaks=fused_peaks, neutral_mass=neutral_mass, precursor_mz=precursor_mz
                         )
                         matched_scaff = None
-                        if sigs.get("flavonoid") and "quercetin" in BOTANICAL_AGLYCONE_LIBRARY:
-                            matched_scaff = BOTANICAL_AGLYCONE_LIBRARY["quercetin"]["smiles"]
-                        elif sigs.get("galloyl") and "gallic_acid" in BOTANICAL_AGLYCONE_LIBRARY:
-                            matched_scaff = BOTANICAL_AGLYCONE_LIBRARY["gallic_acid"]["smiles"]
-                        elif sigs.get("caffeoyl") and "caffeic_acid" in BOTANICAL_AGLYCONE_LIBRARY:
-                            matched_scaff = BOTANICAL_AGLYCONE_LIBRARY["caffeic_acid"]["smiles"]
+                        if sigs.get("flavonoid") and "REF_QUERCETIN" in BOTANICAL_AGLYCONE_LIBRARY:
+                            matched_scaff = BOTANICAL_AGLYCONE_LIBRARY["REF_QUERCETIN"]["smiles"]
+                        elif sigs.get("galloyl") and "REF_GALLIC_ACID" in BOTANICAL_AGLYCONE_LIBRARY:
+                            matched_scaff = BOTANICAL_AGLYCONE_LIBRARY["REF_GALLIC_ACID"]["smiles"]
+                        elif sigs.get("caffeoyl") and "REF_CAFFEIC_ACID" in BOTANICAL_AGLYCONE_LIBRARY:
+                            matched_scaff = BOTANICAL_AGLYCONE_LIBRARY["REF_CAFFEIC_ACID"]["smiles"]
 
                         if matched_scaff:
-                            from src.chemistry.standardizer import compute_fingerprint
-                            from src.data.db_indexer import pack_fingerprint
-                            scaff_raw_fp = compute_fingerprint(matched_scaff)
-                            if scaff_raw_fp is not None:
-                                db_query_fp = pack_fingerprint(scaff_raw_fp)
+                            from src.chemistry.standardizer import compute_morgan_fingerprint
+                            scaff_fp = compute_morgan_fingerprint(matched_scaff)
+                            if scaff_fp is not None:
+                                db_query_fp = scaff_fp
                     except Exception:
                         db_query_fp = None
 
@@ -774,23 +818,19 @@ class CASMIOmegaPipeline:
                 for nc in network_cands:
                     scaff_smi = getattr(nc, "scaffold_smiles", None)
                     if scaff_smi:
-                        try:
-                            from rdkit import Chem
-                            scaff_m = Chem.MolFromSmiles(scaff_smi)
-                            if scaff_m is not None:
-                                for c in list(aggregated_cands):
-                                    c_smi = c.get("smiles")
-                                    if c_smi and c.get("source") != "track_network":
-                                        c_m = Chem.MolFromSmiles(c_smi)
-                                        if c_m and (c_m.HasSubstructMatch(scaff_m) or scaff_m.HasSubstructMatch(c_m)):
-                                            aggregated_cands.append({
-                                                "inchikey14": c["inchikey14"],
-                                                "smiles": c_smi,
-                                                "score": nc.network_score,
-                                                "source": "track_network",
-                                            })
-                        except Exception:
-                            pass
+                        scaff_m, scaff_fp = _get_cached_mol_and_fp(scaff_smi, mol_cache)
+                        if scaff_m is not None:
+                            for c in list(aggregated_cands):
+                                c_smi = c.get("smiles")
+                                if c_smi and c.get("source") != "track_network":
+                                    c_m, c_fp = _get_cached_mol_and_fp(c_smi, mol_cache)
+                                    if _is_substructure_compatible(scaff_m, scaff_fp, c_m, c_fp):
+                                        aggregated_cands.append({
+                                            "inchikey14": c["inchikey14"],
+                                            "smiles": c_smi,
+                                            "score": nc.network_score,
+                                            "source": "track_network",
+                                        })
 
             for c_str in knapsack_cands:
                 cand_str = str(c_str).strip()
@@ -990,6 +1030,7 @@ class CASMIOmegaPipeline:
                 net_cands = self.transductive_network.propagate_scaffold(
                     target_id=spec_id,
                     known_scaffolds=self.solved_scaffolds,
+                    max_delta_da=400.0,
                 )
                 if not net_cands:
                     continue
@@ -1001,44 +1042,36 @@ class CASMIOmegaPipeline:
                     scaff_smi = getattr(nc, "scaffold_smiles", None)
                     if not scaff_smi:
                         continue
-                    try:
-                        from rdkit import Chem
-                        scaff_m = Chem.MolFromSmiles(scaff_smi)
-                        if scaff_m is None:
-                            continue
-                        for c in list(curr_cands):
-                            c_smi = c.get("smiles")
-                            if c_smi and c.get("source") != "track_network":
-                                c_m = Chem.MolFromSmiles(c_smi)
-                                if c_m and (c_m.HasSubstructMatch(scaff_m) or scaff_m.HasSubstructMatch(c_m)):
-                                    boosted = True
-                                    if not any(x.get("source") == "track_network" and x.get("inchikey14") == c.get("inchikey14") for x in curr_cands):
-                                        curr_cands.append({
-                                            "inchikey14": c["inchikey14"],
-                                            "smiles": c_smi,
-                                            "score": nc.network_score,
-                                            "source": "track_network",
-                                        })
-                    except Exception:
-                        pass
+                    scaff_m, scaff_fp = _get_cached_mol_and_fp(scaff_smi, mol_cache)
+                    if scaff_m is None:
+                        continue
+                    for c in list(curr_cands):
+                        c_smi = c.get("smiles")
+                        if c_smi and c.get("source") != "track_network":
+                            c_m, c_fp = _get_cached_mol_and_fp(c_smi, mol_cache)
+                            if _is_substructure_compatible(scaff_m, scaff_fp, c_m, c_fp):
+                                boosted = True
+                                if not any(x.get("source") == "track_network" and x.get("inchikey14") == c.get("inchikey14") for x in curr_cands):
+                                    curr_cands.append({
+                                        "inchikey14": c["inchikey14"],
+                                        "smiles": c_smi,
+                                        "score": nc.network_score,
+                                        "source": "track_network",
+                                    })
                 if boosted and spec_id in scored_candidates_by_id:
                     s_cands = scored_candidates_by_id[spec_id]
                     for entry in s_cands:
                         entry_smi = entry.get("smiles")
                         if entry_smi:
-                            try:
-                                from rdkit import Chem
-                                em = Chem.MolFromSmiles(entry_smi)
-                                for nc in net_cands:
-                                    scaff_smi = getattr(nc, "scaffold_smiles", None)
-                                    if scaff_smi:
-                                        sm = Chem.MolFromSmiles(scaff_smi)
-                                        if em and sm and (em.HasSubstructMatch(sm) or sm.HasSubstructMatch(em)):
-                                            entry["features"][9] = 2.0
-                                            entry["features"][10] = 1.0
-                                            entry["features"][15] = 1.0
-                            except Exception:
-                                pass
+                            em, efp = _get_cached_mol_and_fp(entry_smi, mol_cache)
+                            for nc in net_cands:
+                                scaff_smi = getattr(nc, "scaffold_smiles", None)
+                                if scaff_smi:
+                                    sm, sfp = _get_cached_mol_and_fp(scaff_smi, mol_cache)
+                                    if _is_substructure_compatible(sm, sfp, em, efp):
+                                        entry["features"][9] = 2.0
+                                        entry["features"][10] = 1.0
+                                        entry["features"][15] = 1.0
                     ranked_updated = self.meta_ranker.score_candidates(s_cands)
                     rows[idx] = self._format_row(spec_id, ranked_updated, fmt)
 
