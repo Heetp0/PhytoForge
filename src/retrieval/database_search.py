@@ -46,8 +46,19 @@ class SoftDatabaseSearcher:
         """Vectorized Tanimoto calculation over 2D candidate fingerprint matrix."""
         if db_fps.shape[0] == 0:
             return np.array([], dtype=np.float32)
-        q = query_fp.astype(np.float32)
-        fps = db_fps.astype(np.float32)
+        q = np.asarray(query_fp)
+        fps = np.asarray(db_fps)
+        if fps.ndim == 1:
+            fps = fps.reshape(1, -1)
+        if q.shape[0] != fps.shape[1]:
+            if q.shape[0] < fps.shape[1]:
+                q_adj = np.zeros(fps.shape[1], dtype=q.dtype)
+                q_adj[:q.shape[0]] = q
+                q = q_adj
+            else:
+                q = q[:fps.shape[1]]
+        q = q.astype(np.float32)
+        fps = fps.astype(np.float32)
         intersection = np.dot(fps, q)
         query_sum = np.sum(q)
         db_sums = np.sum(fps, axis=1)
@@ -117,7 +128,21 @@ class SoftDatabaseSearcher:
             form_cands = self.db.get(form, [])
             if max_candidates_per_formula is not None:
                 form_cands = form_cands[:max_candidates_per_formula]
-            for smiles, ik14, mol_fp in form_cands:
+            for item in form_cands:
+                if isinstance(item, dict):
+                    smiles = item.get("smiles", "")
+                    ik14 = item.get("inchikey14", "")
+                    mol_fp = item.get("mol_fp", item.get("fingerprint", np.zeros(32, dtype=np.uint64)))
+                elif isinstance(item, (list, tuple)):
+                    if len(item) >= 3:
+                        smiles, ik14, mol_fp = item[0], item[1], item[2]
+                    elif len(item) == 2:
+                        smiles, ik14 = item[0], item[1]
+                        mol_fp = np.zeros(32, dtype=np.uint64)
+                    else:
+                        continue
+                else:
+                    continue
                 if ik14 in seen_ik14:
                     continue
                 seen_ik14.add(ik14)

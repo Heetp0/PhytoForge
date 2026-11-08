@@ -451,7 +451,15 @@ class CASMIOmegaPipeline:
             test_df = pd.DataFrame()
 
         if not test_df.empty:
-            id_col = "id" if "id" in test_df.columns else ("molecule_id" if "molecule_id" in test_df.columns else None)
+            id_col = (
+                "id"
+                if "id" in test_df.columns
+                else (
+                    "molecule_id"
+                    if "molecule_id" in test_df.columns
+                    else ("spectrum_id" if "spectrum_id" in test_df.columns else None)
+                )
+            )
             if id_col is not None and test_df[id_col].notna().all():
                 raw_ids = [str(x) for x in test_df[id_col]]
             else:
@@ -773,13 +781,27 @@ class CASMIOmegaPipeline:
                 elif track2_cands:
                     track2_cands.sort(key=lambda x: getattr(x, "tanimoto_score", 0.0), reverse=True)
 
+            # Golden Hit Fast-Bypass & Dynamic Time Budgeting
+            top_hit_score = 0.0
+            for c in track1_cands:
+                try:
+                    s = float(getattr(c, "score", 0.0) if hasattr(c, "score") else (c.get("score", 0.0) if isinstance(c, dict) else 0.0))
+                    if s > top_hit_score:
+                        top_hit_score = s
+                except (ValueError, TypeError, AttributeError):
+                    pass
+            golden_hit_bypass = top_hit_score >= 0.82 or per_spec_budget < 2.0
+
             # Track 3: Latency-bounded de novo sampling (conditioned on remaining per-spec budget)
-            track3_timeout = min(per_spec_budget, 10.0)
-            track3_cands = self.denovo_engine.generate_with_timeout(
-                spectrum_id=spec_id,
-                formula=routing.formulas[0] if routing.formulas else None,
-                timeout_seconds=track3_timeout,
-            )
+            if golden_hit_bypass:
+                track3_cands = []
+            else:
+                track3_timeout = min(per_spec_budget * 0.40, 6.0)
+                track3_cands = self.denovo_engine.generate_with_timeout(
+                    spectrum_id=spec_id,
+                    formula=routing.formulas[0] if routing.formulas else None,
+                    timeout_seconds=track3_timeout,
+                )
 
             # Transductive networking propagation
             self.transductive_network.add_spectrum(
@@ -792,13 +814,14 @@ class CASMIOmegaPipeline:
 
             # Track K: Knapsack substructure assembly
             knapsack_cands = []
-            if self.fragment_library:
+            if self.fragment_library and not golden_hit_bypass:
                 try:
                     from src.reranking.fragment_library import KnapsackAssembler, purge_mixtures
+                    knap_timeout = min(per_spec_budget * 0.20, 2.0)
                     raw_knap_cands = KnapsackAssembler().assemble(
                         target_mass_da=neutral_mass,
                         library=self.fragment_library,
-                        timeout_s=2.0,
+                        timeout_s=knap_timeout,
                         filter_mixtures=True,
                     )
                     knapsack_cands = purge_mixtures(raw_knap_cands)
