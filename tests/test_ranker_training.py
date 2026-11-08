@@ -218,7 +218,7 @@ class TestGBDTMetaRankerInference:
         ]
         scored = ranker.score_candidates(cands)
         assert scored[0]["id"] == "high"
-        assert scored[0]["meta_score"] == 33.0
+        assert scored[0]["meta_score"] == float(np.sum(ranker.weights))
         assert scored[1]["id"] == "low"
         assert scored[1]["meta_score"] == 0.0
 

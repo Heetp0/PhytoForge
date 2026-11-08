@@ -55,14 +55,13 @@ def fragment_mass(smiles: str) -> float:
         if mol is None:
             return 0.0
 
-        # Convert dummy attachment atoms (atomic number 0) to Hydrogen (1) and remove Hs
+        # Check and remove dummy atoms (atomic number 0) in reverse index order
         rw = Chem.RWMol(mol)
         has_dummy = False
-        for atom in rw.GetAtoms():
+        for i in reversed(range(rw.GetNumAtoms())):
+            atom = rw.GetAtomWithIdx(i)
             if atom.GetAtomicNum() == 0:
-                atom.SetAtomicNum(1)
-                atom.SetIsotope(0)
-                atom.SetFormalCharge(0)
+                rw.RemoveAtom(i)
                 has_dummy = True
 
         clean_mol = rw.GetMol()
@@ -71,7 +70,6 @@ def fragment_mass(smiles: str) -> float:
 
         if has_dummy:
             Chem.SanitizeMol(clean_mol)
-            clean_mol = Chem.RemoveHs(clean_mol)
 
         mass = float(Descriptors.ExactMolWt(clean_mol))
         return mass if mass > 0.0 else 0.0
@@ -104,21 +102,16 @@ def strip_dummy_atoms_and_sanitize(frag_smi: str) -> Optional[Tuple[str, float, 
             return None
 
         rw = Chem.RWMol(frag_mol)
-        has_dummy = False
-        for atom in rw.GetAtoms():
+        for i in reversed(range(rw.GetNumAtoms())):
+            atom = rw.GetAtomWithIdx(i)
             if atom.GetAtomicNum() == 0:
-                atom.SetAtomicNum(1)
-                atom.SetIsotope(0)
-                atom.SetFormalCharge(0)
-                has_dummy = True
+                rw.RemoveAtom(i)
 
         clean_mol = rw.GetMol()
         if clean_mol.GetNumAtoms() == 0:
             return None
 
-        if has_dummy:
-            Chem.SanitizeMol(clean_mol)
-            clean_mol = Chem.RemoveHs(clean_mol)
+        Chem.SanitizeMol(clean_mol)
         clean_smi = Chem.MolToSmiles(clean_mol, canonical=True)
 
         # Output SMILES MUST contain NO dummy atom patterns ([*], [0*], [N*], etc.)

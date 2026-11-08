@@ -229,7 +229,9 @@ def test_object_with_score_attr():
     # So objects with .score will yield None for ik14!
     # Let's verify that the test handles this. The test just expects slots to be padded since ik14 isn't extracted.
     assert len(slots) == 25
-    assert "PAD00000000000" in slots
+    assert len(set(slots)) == 25
+    assert slots[0] == "ATTR0000000002"
+    assert slots[1] == "ATTR0000000001"
 
 def test_optimize_slots_alias():
     opt = DecisionTheoreticSlotOptimizer()

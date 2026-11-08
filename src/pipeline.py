@@ -791,7 +791,8 @@ class CASMIOmegaPipeline:
                         top_hit_score = s
                 except (ValueError, TypeError, AttributeError):
                     pass
-            golden_hit_bypass = top_hit_score >= 0.82 or per_spec_budget < 2.0
+            has_authentic_index = getattr(self.dreams_retriever, "has_index", False)
+            golden_hit_bypass = (top_hit_score >= 0.82 and has_authentic_index) or per_spec_budget < 2.0
 
             # Track 3: Latency-bounded de novo sampling (conditioned on remaining per-spec budget)
             if golden_hit_bypass:

@@ -70,7 +70,7 @@ def fuse_peaks(
     frames: List[SpectralFrame],
     tolerance_da: float = 0.02,
     intensity_aggregation: str = "max",
-    normalize_per_frame: bool = True,
+    normalize_per_frame: bool = False,
 ) -> np.ndarray:
     """
     Merge and deduplicate MS2 peaks across collision energies within mass tolerance.
@@ -249,7 +249,7 @@ class MultiEnergyFusionEngine:
         frames: List[SpectralFrame],
         tolerance_da: float = 0.02,
         intensity_aggregation: str = "max",
-        normalize_per_frame: bool = True,
+        normalize_per_frame: bool = False,
     ) -> np.ndarray:
         """Merge and deduplicate MS2 peaks across collision energies."""
         return fuse_peaks(
@@ -264,7 +264,7 @@ class MultiEnergyFusionEngine:
         frames: List[SpectralFrame],
         tolerance_da: float = 0.02,
         intensity_aggregation: str = "max",
-        normalize_per_frame: bool = True,
+        normalize_per_frame: bool = False,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Execute full fusion across both embeddings and peak lists.
